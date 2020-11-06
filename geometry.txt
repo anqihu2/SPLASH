@@ -1,4 +1,0 @@
-First Line
-Second Line
-newline
-testing

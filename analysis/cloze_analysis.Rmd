@@ -1,0 +1,488 @@
+---
+title: "splash_cloze_analysis"
+author: "Jojo Hu"
+date: "12/24/2019"
+output: html_document
+---
+
+This script analyzes the cloze test results from Splash behavioral stimuli pilot. The script requires manual cleaning of answers.
+
+
+# Load original stimuli
+```{r}
+setwd("/Users/jojohu/Documents/Splash/cloze_analysis")
+
+stim <- read.csv("fill_blank_spreadsheet1.csv")
+
+stimbp <- read.csv("fill_blank_spreadsheet2.csv")
+
+stim <- cbind(stim, stimbp[,-c(1:7)])
+
+stim <- stim[-1, ]
+
+# Use the first sentence of each story to identify the story. The first sentence is the same for Luke and Lisa's story and its backup story.
+stim_first <- stim[1, grep("fir", colnames(stim))]
+
+stim_ver <- as.data.frame(t(stim_first))
+
+library(data.table)
+stim_ver <- setDT(stim_ver, keep.rownames = TRUE)[]
+colnames(stim_ver) <- c("story", "text")
+```
+
+# Make long dataframe for story text
+```{r}
+library(reshape)
+stim_long  <- melt(stim[,-which(names(stim) %in% c("randomise_blocks", "randomise_trials",
+                                                   "display", "Progress_fillgaps", "First",
+                                                   "Last"))], id.vars = c("Answer"))
+
+library(stringr)
+stim_long <- stim_long[-which(str_detect(stim_long$variable, "las$")),]
+stim_long <- stim_long[-which(stim_long$Answer == "" | stim_long$Answer == "last_sentence"),]
+colnames(stim_long) <- c("trial", "story", "str_text")
+stim_long$trial <- as.character(stim_long$trial)
+stim_long$story <- as.character(stim_long$story)
+```
+
+# Load fill blank raw data
+```{r}
+# This does not include pilot data. Because there are 3 versions, version 3 and 4 without demographic and used in lab consent form for version 3; version 4: used behavioral online consent form;  version 5: with demographic and used the behavioral online consent form.
+
+data_list <-
+  list.files(path = "/Users/jojohu/Documents/Splash/cloze_analysis/raw_data",
+             pattern = "*v\\S+.csv", full.names = T)
+
+
+
+# Get file name to identify story26
+fname <-basename(data_list)
+
+cdata <- lapply(data_list, read.csv)
+
+col_list <- list()
+
+for (i in 1:length(cdata)) {
+  current_fname <- fname[i]
+  current <- cdata[[i]][,c("Participant.Private.ID", "Participant.Status", "Y.Coordinate", "First")] 
+  current[, "fname"] <- current_fname
+  col_list[[i]] <- current
+  }
+
+
+cdata <- do.call(rbind, col_list)
+
+fir_sen <- cdata$First[-1] 
+fir_sen <- as.character(fir_sen)
+fir_sen <- append(fir_sen, NA)
+
+cdata <- cbind(cdata[ , -which(names(cdata) %in% "First")], fir_sen)
+cdata <- cdata[-which(cdata$Y.Coordinate == ""),]
+colnames(cdata)[which(colnames(cdata) == "Participant.Private.ID")] <- "subid"
+colnames(cdata)[which(colnames(cdata) == "Y.Coordinate")] <- "answer"
+colnames(cdata)[which(colnames(cdata) == "fir_sen")] <- "text"
+
+library(stringr)
+cdata$fname <- str_extract(cdata$fname, "\\S+(?=_v\\S+)")
+
+
+cdata$text <- as.character(cdata$text)
+```
+
+# Check trial number for participants who reached timelimit and have wrong trials
+```{r}
+tldata <- cdata[which(cdata$Participant.Status == "rejected - time limit reached"), ]
+
+library(dplyr)
+
+tlcount <- 
+  tldata %>%
+  group_by(subid, fname) %>%
+  dplyr::count(text) 
+
+tlwrong <- tlcount[which(tlcount$n != 9),]
+
+wrongd  <- list()
+wrongdR = 0
+
+for(i in 1:nrow(tlwrong)) {
+  
+  wrongdR = wrongdR + 1
+  
+  wrongd[[wrongdR]] <- 
+    cdata[which(cdata$subid %in% tlwrong[i,"subid"] & cdata$text %in% tlwrong[i, "text"]),]
+}
+
+wrongd <- do.call(rbind, wrongd)
+
+# Check wrongd to see which rows are the rows that should be excluded. May vary from file to file.
+wrongd <- cbind(wrongd, rev(sequence(rev(tlwrong$n))), rownames(wrongd))
+
+excluderow <- wrongd[which(wrongd$`rev(sequence(rev(tlwrong$n)))` > 9), "rownames(wrongd)"]
+
+cdata <- cdata[!rownames(cdata) %in% excluderow,] 
+
+# After cleaning trials for reach-timelimit ids, check whether all part have correct number of trials
+
+# This process needs to be done again because the trials that should be excluded are different from the timelimit part
+
+num_trial <- cdata %>% dplyr::count(subid) 
+
+
+# if (sum(num_trial$n %% 9) != 0) {
+#    stop("Check the number of trials for these participants:")
+#    print(num_trial[which(num_trial$n != 234),])
+#  }
+
+wtrialID <- num_trial[which(num_trial$n %% 9 != 0), "subid"]
+
+wtrial <- cdata[which(cdata$subid %in% wtrialID$subid),]
+
+wtrialN <-
+  wtrial %>%
+  group_by(subid, fname) %>%
+  dplyr::count(text) 
+
+wtrialN <- wtrialN[which(wtrialN$n != 9),]
+
+wtriald  <- list()
+wtrialdR = 0
+
+for(i in 1:nrow(wtrialN)) {
+  
+  wtrialdR = wtrialdR + 1
+  
+  wtriald[[wtrialdR]] <- 
+    cdata[which(cdata$subid %in% wtrialN[i,"subid"] & cdata$text %in% wtrialN[i, "text"]),]
+}
+
+wtriald <- do.call(rbind, wtriald)
+
+wtriald <- cbind(wtriald, sequence(wtrialN$n), rownames(wtriald))
+
+# Check wtriald and raw data file, vary from case to case
+excluderow <- wtriald[9:16, "rownames(wtriald)"]
+
+cdata <- cdata[!rownames(cdata) %in% excluderow,] 
+
+num_trial <- cdata %>% dplyr::count(subid) 
+
+
+if (sum(num_trial$n %% 9) != 0) {
+   stop("Check the number of trials for these participants:")
+   print(num_trial[which(num_trial$n != 234),])
+ }
+```
+
+
+# Add text to story 26 first sentence so that key can be merged to cdata correctly
+```{r}
+cdata[which(cdata$fname=="backup4"), "text"] <-
+  paste(cdata[which(cdata$fname=="backup4"), "text"], "bp")
+```
+
+# Manual checking for trials that are missing text
+```{r}
+cdata[which(cdata$text == ""),]$text <- as.character(stim_ver[20]$text)
+
+cdata[which(rownames(cdata) == 21898),]
+```
+
+# Load answer keys
+```{r}
+key <- read.csv("key.csv")
+key <- key[-c(10:14),]
+key <- melt(key, id.vars = "Answer")
+colnames(key) <- c("trial", "story", "key")
+```
+
+
+# Calculate initial accuracy before typos are manually corrected, remove outliers
+```{r}
+cdata$trial <- rep(unique(key$trial), length(cdata$answer)/length(unique(key$trial)))
+
+detach("package:dplyr")
+
+library(plyr)
+
+cdata <- join(cdata, stim_ver)
+
+cdata <- join(cdata, key)
+
+cdata$answer <- as.character(cdata$answer)
+cdata$key <- as.character(cdata$key)
+
+accuracy <- ifelse(cdata$answer == cdata$key,1,0)
+
+cdata <- cbind(cdata, as.data.frame(accuracy))
+
+length(unique(cdata$story))
+
+print(unique(cdata$story))
+```
+
+
+
+```{r}
+detach("package:plyr")
+
+library(dplyr)
+
+
+prelim_acc <-
+  cdata %>%
+  group_by(subid) %>%
+  dplyr::summarise(correct_trial = sum(accuracy), total_trial = n(),accuracy = sum(accuracy)/ n())
+
+
+# This outlier is also the out of timelimit part, did not complete the study.
+prelim_outlier <- prelim_acc[which(prelim_acc$accuracy < 0.5), "subid"]
+print(prelim_outlier)
+
+
+# if(nrow(prelim_outlier) != 0) {
+#   cdata <- cdata[-which(cdata$subid %in% prelim_outlier),]
+#   stop("Check preliminary accuracy outliers")
+#   print(prelim_outlier)
+# }
+
+prelim_acc_by_story <-
+  cdata %>%
+  group_by(story) %>%
+  dplyr::summarise(correct_trial = sum(accuracy), total_trial = n(),accuracy = sum(accuracy)/ n())
+
+print(prelim_acc_by_story)
+
+
+write.csv(cdata, "cdata.csv")
+```
+**Accuracy lower than 50% before typo is removed: `r prelim_outlier`** Same as the incomplete part. Removed.
+
+
+# Check Typos
+```{r}
+write.table(cdata$answer, file = "answer.txt", sep = "\t",
+            row.names = F, col.names = F)
+
+library(spelling)
+typo <- spell_check_files("answer.txt", lang = "en_US")
+print(typo)
+
+typo_row <- gsub("answer.txt:", "", typo$found)
+
+typo_row <- as.numeric(as.character(unlist(strsplit(typo_row, ","))))
+
+cdata[typo_row, "typo"] <- 1
+
+write.csv(cdata, "/Users/jojohu/Documents/Splash/cloze_analysis/typo.csv")
+```
+
+# Manual cleaning of typo
+**Save manually cleaned typo and accuracy to typo_checked.csv**
+
+# Calculate Accuracy after manual typo correction 
+```{r}
+library(dplyr)
+library(stringr)
+
+cdata <- read.csv("typo_checked.csv")
+
+cdata<- cdata[!colnames(cdata) %in% "accuracy"]
+  
+cdata$answer <- as.character(cdata$answer)
+cdata$key <- as.character(cdata$key)
+
+# Get rid of all non-alphabetic characters
+cdata$answer <- str_extract(cdata$answer, "[:alpha:]+")
+
+accuracy <- ifelse(cdata$answer == cdata$key,1,0)
+
+cdata<- cbind(cdata, as.data.frame(accuracy))
+
+# cdata[which(cdata$story == "story21_fir" & is.na(cdata$accuracy)), "accuracy"] <- 0
+           
+
+
+acc_by_story <-
+  cdata %>%
+  group_by(story) %>%
+  dplyr::summarise(correct_trial = sum(accuracy), total_trial = n(),accuracy = sum(accuracy)/ n())
+
+which(is.na(cdata[which(cdata$story == "story21_fir"),"accuracy"]))
+
+print(acc_by_story)
+
+# write.csv(cdata, "wrong_answer.csv")
+```
+
+# Manual cleaning of wrong answers due to real synonymns (airplane-plane) 
+Automate cleaning of formating error (extra space, etc.)
+
+**Save manually cleaned typo and accuracy to typo_checked.csv**
+
+# Generate wrong answers
+```{r}
+detach("package:dplyr")
+
+library(plyr)
+
+cdata <- join(cdata, stim_long)
+
+cdata <- cdata[, -which(names(cdata) == "text")]
+
+wrong_answer <- cdata[which(cdata$accuracy == 0),]
+
+write.csv(wrong_answer, "wrong_answer.csv", row.names = FALSE)
+
+detach("package:plyr")
+
+library(dplyr)
+
+wans_count <-
+  wrong_answer %>%
+  group_by(story, trial) %>%
+  dplyr::summarise(n = n())
+
+# wcount <- wans_count[which(wans_count$n > 3),]
+
+highw <- 
+  merge(wcount, wrong_answer, by = c("story", "trial"), all.x = T)
+
+highw <-highw[!names(highw) %in% "fname"]
+
+write.csv(highw, "wrong_trials.csv", row.names = FALSE)
+```
+
+
+# Recalculate Accuracy after answer key and synonym checked 
+```{r}
+cdataFinal <- read.csv("wrong_answer_all_corrected.csv")
+
+cdataFinal <- cdataFinal[!colnames(cdataFinal) %in% "accuracy"]
+  
+cdataFinal$answer <- as.character(cdataFinal$answer)
+cdataFinal$key <- as.character(cdataFinal$key)
+
+# # Get rid of all non-alphabetic characters
+# cdata$answer <- str_extract(cdata$answer, "[:alpha:]+")
+
+accuracy <- ifelse(cdataFinal$answer == cdataFinal$key,1,0)
+
+cdataFinal<- cbind(cdataFinal, as.data.frame(accuracy))
+
+# cdata[which(cdata$story == "story21_fir" & is.na(cdata$accuracy)), "accuracy"] <- 0
+```
+
+```{r}
+noun_condition <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/noun_cond_key.csv")
+
+verb_condition <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/verb_cond_key.csv")
+
+allCond <- rbind(noun_condition, verb_condition)
+
+cdataFinal <- merge(cdataFinal, allCond, by = c("story", "trial"), all.x = T)
+
+noun_story <- c("story1_fir",
+                       "story2_fir",
+                       "story3_fir",
+                       "story4_fir",
+                       "story5_fir",
+                       "story6_fir",
+                       "story7_fir",
+                       "story8_fir",
+                       "story9_fir",
+                       "story10_fir",
+                       "story21_fir")
+
+cdataFinal[which(cdataFinal$story %in% noun_story), "word_class"] <- "noun"
+
+cdataFinal[which(!cdataFinal$story %in% noun_story), "word_class"] <- "verb"
+
+
+# All stories
+
+acc_by_story <- 
+  cdataFinal %>%
+  group_by(story) %>%
+  dplyr::summarise(correct_trial = sum(accuracy), total_trial = n(),accuracy = sum(accuracy)/ n())
+
+print(acc_by_story)
+
+# All Nouns
+# All Verbs
+cdataFinal[which(cdataFinal$word_class == "noun"),] %>%
+  group_by(story, condition) %>%
+  dplyr::summarise(correct_trial = sum(accuracy), total_trial = n(),accuracy = sum(accuracy)/ n())
+
+
+# All Verbs
+verbAcc <- 
+cdataFinal[which(cdataFinal$word_class == "verb"),] %>%
+  group_by(story, condition, trial) %>%
+  dplyr::summarise(correct_trial = sum(accuracy), total_trial = n(),accuracy = sum(accuracy)/ n())
+
+
+cdataFinal[which(cdataFinal$word_class == "noun"),] %>%
+  group_by(story, condition, trial) %>%
+  dplyr::summarise(correct_trial = sum(accuracy), total_trial = n(),accuracy = sum(accuracy)/ n())
+
+
+verbAccStory <- 
+  cdataFinal[which(cdataFinal$word_class == "verb"),] %>%
+  group_by(story, condition) %>%
+  dplyr::summarise(correct_trial = sum(accuracy), total_trial = n(),accuracy = sum(accuracy)/ n())
+
+keyVerbLearn <- verbAcc[which(verbAcc$accuracy > 0.9 & verbAcc$condition == "M+"), c("story", "word")]
+
+verbAccStory[which(verbAccStory$accuracy > 0.87), 
+                    # & verbAccStory$condition == "M+"), 
+             c("story", "condition")]
+
+
+
+write.table(keyVerbLearn, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/keyVerbLearn.txt", row.names = F, col.names = F, quote = F)
+```
+
+# Accuracy by condition
+```{r}
+acc_noun <- cdataFinal[which(cdataFinal$story %in% noun_story), 
+                       c("subid", "story", "trial", "condition", "key", "answer", "accuracy", "word_class")]
+
+acc_verb <- cdataFinal[-which(cdataFinal$story %in% noun_story), 
+                       c("subid", "story", "trial", "condition", "key", "answer", "accuracy", "word_class")]
+
+
+acc_noun$story <- as.factor(acc_noun$story)
+acc_noun$subid <- as.factor(acc_noun$subid)
+acc_noun$trial <- as.factor(acc_noun$trial)
+acc_noun$condition <- as.factor(acc_noun$condition)
+# acc_noun$accuracy <- as.factor(acc_noun$accuracy)
+
+# head(acc_noun)
+
+# library(lmerTest)
+
+# acc_m1 <-
+#   glmer(accuracy~story*condition  + (1 + condition| story) + (1 | subid), data = acc_noun,
+#     family = binomial,control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+# 
+# summary(acc_m1)
+
+
+accN_by_trial <- 
+acc_noun %>%
+  group_by(story, condition) %>%
+  dplyr::summarise(correct_trial = sum(accuracy), total_trial = n(),accuracy = sum(accuracy)/ n())
+
+head(accN_by_trial)
+
+library(ez)
+ezANOVA(accN_by_trial, accuracy, wid = story, within = condition, type = 3, detailed = T)
+
+
+acc_noun %>%
+  group_by(story, condition) %>%
+  dplyr::summarise(correct_trial = sum(accuracy), total_trial = n(),accuracy = sum(accuracy)/ n())
+```
+
+

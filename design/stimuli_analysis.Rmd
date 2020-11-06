@@ -1,0 +1,361 @@
+---
+title: "transform_key"
+author: "Jojo Hu"
+date: "7/1/2020"
+output: html_document
+---
+
+# Extract conditions for target words 
+```{r}
+allKey <- read.csv("key.csv")
+noun <- allKey[,c(1:11, 22)]
+
+library(reshape)
+noun <- melt(noun, id.vars = "Answer")
+
+nounUnique <- noun[-which(duplicated(noun$value)),]
+# write.table(nounUnique$value, "key_noun.txt", row.names = F, col.names = F, quote = F)
+
+
+verb <- allKey[,-c(2:11, 22, 24)]
+
+verb <- melt(verb, id.vars = "Answer")
+```
+
+```{r}
+cond <- read.csv("condition.csv")
+cond <- cond[rep(seq_len(nrow(cond)), 3), ]
+
+row.names(cond) <-1:nrow(cond)
+colnames(cond)[1] <- "trial" 
+
+cond$trial <- c("trial1",
+                "trial2",
+                "trial3",
+                "trial4",
+                "trial5",
+                "trial6",
+                "trial7",
+                "trial8",
+                "trial9")
+
+
+ncond <- cond[,c(1:11, 22)]
+
+ncondLong <- melt(ncond, id.vars = "trial")
+
+ncondLong <- cbind(ncondLong, noun$value)
+
+colnames(ncondLong) <- c("trial", "story", "condition", "word")
+
+# write.csv(ncondLong, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/noun_cond_key.csv", row.names = F)
+
+vcond <- cond[,-c(2:11, 22, 24)]
+
+vcondLong <- melt(vcond, id.vars = "trial")
+
+vcondLong <- cbind(vcondLong, verb$value)
+
+colnames(vcondLong) <- c("trial", "story", "condition", "word")
+
+# write.csv(vcondLong, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/verb_cond_key.csv", row.names = F)
+```
+
+# AOA, Imagebility, Frequency for target words
+```{r}
+aoa <- read.csv("/Users/jojohu/Documents/Splash/story_stimuli/kuperman_et_al_2012_AOA.csv")
+
+aoaN_kp <- aoa[which(aoa$Word %in% ncondLong$word),]
+
+aoaN_kp <- 
+  merge(ncondLong, aoaN_kp, by.x = c("word"), by.y = c("Word"), all.x = T)
+
+aoaN_kp <- aoaN_kp[,!names(aoaN_kp) %in% c("trial")]
+
+aoaN_kp <- aoaN_kp[-which(duplicated(aoaN_kp)),]
+
+head(aoaN_kp)
+
+library(ez)
+ezANOVA(aoaN_kp, dv = Rating.Mean, wid = story, within = condition, type = 3, detailed = T)
+
+# NOUNs
+aoaN_kp %>%
+  group_by(condition) %>%
+  dplyr::summarise(correct_trial = sum(Rating.Mean), total_trial = n(), mean_aoa = correct_trial/ n())
+
+```
+
+
+# Find Part of Speech for child word database
+```{r, eval =F}
+aoa$word <- aoa$Word
+aoa$word <- as.character(aoa$word)
+
+library("lexicon")
+data(hash_grady_pos)
+hash_grady_pos <- grady_pos_feature(hash_grady_pos)
+
+pos <- hash_grady_pos[aoa$word]
+aoa_pos <- pos[primary == TRUE, ]
+
+aoa_pos <- merge(aoa, aoa_pos, by = c("word"))
+
+aoa_pos <- aoa_pos[,-c(10, 11, 12)]
+
+# write.csv(aoa_pos, "/Users/jojohu/Documents/Splash/story_stimuli/kuperman_part_of_speech.csv")
+
+nvaoa <- aoa_pos[which(aoa_pos$Rating.Mean < 7 & 
+                         aoa_pos$Freq_pm > 8 & 
+                         (aoa_pos$pos == "Noun" | 
+                         aoa_pos$pos == "Verb (transitive)" | 
+                         aoa_pos$pos == "Verb (intransitive)" | 
+                         aoa_pos$pos == "Verb (usu participle)")),]
+
+nvaoa$Freq_pm <- as.numeric(as.character(nvaoa$Freq_pm))
+nvaoa <- nvaoa[which(nvaoa$Freq_pm > 10),]
+
+nvaoa <- nvaoa[-which(nvaoa$word %in% key$key),]
+
+# write.csv(nvaoa, "/Users/jojohu/Documents/Splash/story_stimuli/Kuperman_filtered.csv")
+
+targetW <- unique(key$key)
+targetW <- as.data.frame(targetW)
+
+merge(targetW, aoa, by.x = "targetW", by.y = "Word", all.x = T)
+targetW
+```
+
+
+
+```{r}
+fWord <-
+  function(df, condition) {
+  dfCond <- df[which(df$condition == condition), "word"]
+  
+  return(dfCond)
+}
+
+
+keyNounR <- fWord(ncondLong, "R")
+keyNounR <- keyNounR[-which(duplicated(keyNounR))]
+
+keyNounLearn <- fWord(ncondLong, "M+")
+keyNounLearn <- keyNounLearn[-which(duplicated(keyNounLearn))]
+
+keyNounUnlearn <- fWord(ncondLong, "M-")
+# keyNounUnlearn <- keyNounUnlearn[-which(duplicated(keyNounUnlearn))]
+keyNounUnlearn <- append(as.character(keyNounUnlearn), "towel")
+
+# write.table(keyNounR, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/keyNounR.txt", row.names = F, col.names = F, quote = F)
+# write.table(keyNounLearn, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/keyNounLearn.txt", row.names = F, col.names = F, quote = F)
+# write.table(keyNounUnlearn, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/keyNounUnlearn.txt", row.names = F, col.names = F, quote = F)
+
+keyVerbR <- fWord(vcondLong, "R")
+keyVerbR <- keyVerbR[-which(duplicated(keyVerbR))]
+
+keyVerbLearn <- fWord(vcondLong, "M+")
+keyVerbLearn <- keyVerbLearn[-which(duplicated(keyVerbLearn))]
+
+
+keyVerbUnlearn <- fWord(vcondLong, "M-")
+
+
+# write.table(keyNounR, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/keyNounR.txt", row.names = F, col.names = F, quote = F)
+# write.table(keyNounLearn, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/keyNounLearn.txt", row.names = F, col.names = F, quote = F)
+# write.table(keyNounUnlearn, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/keyNounUnlearn.txt", row.names = F, col.names = F, quote = F)
+
+```
+
+# Extract Original Stim Word Orthographic Neighborhood Size
+```{r}
+nounOrth <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/nounAll_orthoneigh_clearpond.csv")
+
+nounOrth <- merge(ncondLong, nounOrth, by.x = c("word"), by.y = c("Word"), all.x = T)
+
+nounOrthR <- nounOrth[which(nounOrth$condition == "R"),]
+
+nounOrthR <- nounOrthR[-which(duplicated(nounOrthR$word)),]
+
+nounOrthLearn <- nounOrth[which(nounOrth$condition == "M+"),]
+
+nounOrthLearn <- nounOrthLearn[-which(duplicated(nounOrthLearn$word)),]
+
+nounOrthUnlearn <- nounOrth[which(nounOrth$condition == "M-"),]
+```
+
+# T.test comparing original vs. novel in Real condition (bisyllabic)
+```{r}
+novelN_orthR <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/nounR_novel_ortho.csv")
+novelN_rootR <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/nounR_novel_wuggy.csv")
+
+novelN_rootR <- novelN_rootR[,c("Word", "Match")]
+
+novelN_orthR <- merge(novelN_orthR, novelN_rootR, by.x = c("NonWord"), by.y = c("Match"), all.x = T)
+
+novelN_orthR <- 
+  merge(novelN_orthR, nounOrthR[,c("word",  "orth_neigh_size", "orth_neigh_feq")], by.x = "Word", by.y = "word")
+
+colnames(novelN_orthR)[which(colnames(novelN_orthR) == "orth_neigh_feq.y")] <- "orth_neigh_feq_root"
+colnames(novelN_orthR)[which(colnames(novelN_orthR) == "orth_neigh_size.y")] <- "orth_neigh_size_root"
+colnames(novelN_orthR)[which(colnames(novelN_orthR) == "orth_neigh_feq.x")] <- "orth_neigh_feq_novel"
+colnames(novelN_orthR)[which(colnames(novelN_orthR) == "orth_neigh_size.x")] <- "orth_neigh_size_novel"
+
+# hist(novelN_orthR$orth_neigh_feq_novel)
+# hist(novelN_orthR$orth_neigh_feq_root)
+
+novelN_orthR <-
+  novelN_orthR[which(abs(novelN_orthR$orth_neigh_feq_novel) < 50),]
+
+## Manual selection
+
+novelN_orthR <- 
+novelN_orthR[which(novelN_orthR$NonWord %in% c("gantom", "gandax", "gandim", "gandap", "gandix", "wonnab", "wannip", "porby", "morby", "chiend", "bramp")),]
+
+
+length(unique(novelN_orthR$Word))
+
+t.test(novelN_orthR$orth_neigh_size_novel, novelN_orthR$orth_neigh_size_root)
+  
+# write.csv(novelN_orthR, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/ortho_matched_noun.csv")
+```
+
+
+# T.test comparing original vs. novel in M+ condition (bisyllabic)
+```{r}
+novelN_orthLearn <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/nounlearn_novel_ortho.csv")
+novelN_rootLearn <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/nounLearn_novel_wuggy.csv")
+
+novelN_rootLearn <- novelN_rootLearn[,c("Word", "Match")]
+
+novelN_orthLearn <- merge(novelN_orthLearn, novelN_rootLearn, by.x = c("NonWord"), by.y = c("Match"), all.x = T)
+
+novelN_orthLearn <- 
+  merge(novelN_orthLearn, nounOrthLearn[,c("word",  "orth_neigh_size", "orth_neigh_feq")], by.x = "Word", by.y = "word")
+
+colnames(novelN_orthLearn)[which(colnames(novelN_orthLearn) == "orth_neigh_feq.y")] <- "orth_neigh_feq_root"
+colnames(novelN_orthLearn)[which(colnames(novelN_orthLearn) == "orth_neigh_size.y")] <- "orth_neigh_size_root"
+colnames(novelN_orthLearn)[which(colnames(novelN_orthLearn) == "orth_neigh_feq.x")] <- "orth_neigh_feq_novel"
+colnames(novelN_orthLearn)[which(colnames(novelN_orthLearn) == "orth_neigh_size.x")] <- "orth_neigh_size_novel"
+
+
+novelN_orthLearn <-
+  novelN_orthLearn[which(novelN_orthLearn$orth_neigh_feq_novel < 50),]
+
+## Manual selection
+
+novelN_orthLearn <- 
+novelN_orthLearn[which(novelN_orthLearn$NonWord %in% c("boupou", "boudou", "beesou", 
+                                                       "beamou", "buidou", "maph", "mato", "sisep",
+                                                       "rate", "ratew", "cume", 
+                                                        "lod", "bap", "cog",
+                                                       "zauj")),]
+
+
+
+#
+length(unique(novelN_orthLearn$Word))
+
+t.test(novelN_orthLearn$orth_neigh_size_novel, novelN_orthLearn$orth_neigh_size_root)
+
+# t.test(novelN_orthLearn$orth_neigh_size_novel, nounOrthLearn$orth_neigh_size)
+# 
+# t.test(novelN_orthR$orth_neigh_size_novel, nounOrthR$orth_neigh_size)
+```
+
+
+
+# Strokel 2013 database select novel monosyllabic words
+```{r}
+sdata <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/strokel2013.csv")
+
+library(dplyr)
+
+sdata$C1V_Body <- as.character(sdata$C1V_Body)
+sdata$VC2_Rhyme <- as.character(sdata$VC2_Rhyme)
+
+sdata %>%
+  group_by(C1V_Body) %>%
+   dplyr::summarise(mean_Cbiphone = mean(CML_B_Sum), mean_Cneigh = mean(CML_N_Nbors))
+                   
+
+sdata %>%
+  group_by(C2, VC2_Rhyme) %>%
+   dplyr::summarise(mean_Cbiphone = mean(CML_B_Sum), mean_Cneigh = mean(CML_N_Nbors))
+                   
+
+sdata_fil <- sdata[which(sdata$CML_B_Sum < 0.003 & sdata$CML_N_Nbors < 20 & sdata$HML_B_Sum < 0.003 & sdata$HML_N_Nbors < 20),]
+```
+
+# Extract IPA for Strokel-filtered monosyllabic novel words
+```{r}
+
+klatt <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/klatt_ipa.csv")
+
+sdata_fil <- merge(sdata_fil, klatt, by.x = c("C1"), by.y = c("Klatt"), all.x = T)
+colnames(sdata_fil)[which(colnames(sdata_fil) == "IPA")] <- "C1_ipa"
+colnames(sdata_fil)[which(colnames(sdata_fil) == "clearpond")] <- "C1_clearpond"
+
+sdata_fil <- merge(sdata_fil, klatt, by.x = c("V"), by.y = c("Klatt"), all.x = T)
+colnames(sdata_fil)[which(colnames(sdata_fil) == "IPA")] <- "V_ipa"
+colnames(sdata_fil)[which(colnames(sdata_fil) == "clearpond")] <- "V_clearpond"
+
+sdata_fil <- merge(sdata_fil, klatt, by.x = c("C2"), by.y = c("Klatt"), all.x = T)
+colnames(sdata_fil)[which(colnames(sdata_fil) == "IPA")] <- "C2_ipa"
+colnames(sdata_fil)[which(colnames(sdata_fil) == "clearpond")] <- "C2_clearpond"
+
+
+# sdata_fil <- sdata_fil[-which(sdata_fil$C2_ipa %in% c("s", "z")),]
+# sdata_fil <- sdata_fil[-which(sdata_fil$V_ipa %in% c("er")),]
+
+
+
+length(unique(sdata_fil$C1))
+
+length(unique(sdata_fil$C2))
+
+length(unique(sdata_fil$V))
+
+strokel_fil <- sdata_fil[order(sdata_fil$V),]
+
+length(strokel_fil)
+
+
+strokel_fil <- strokel_fil[, c(1:29, 30, 32, 34, 31, 33, 35)]
+
+strokel_fil$clearpond_phon <- with(strokel_fil, paste(C1_clearpond, V_clearpond, C2_clearpond, sep = "."))
+
+write.csv(strokel_fil, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/strokel_fil.csv")
+```
+
+# Select words based on Clearpond Phonological Frequency
+```{r}
+cp_fil <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/clearpond_fil.csv")
+
+cp_fil <- cp_fil[which(cp_fil$TotalND < 4),]
+
+cp_fil <- strokel_fil[which(strokel_fil$clearpond_phon %in% cp_fil$NonWord),]
+
+write.csv(cp_fil, "/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/strokel_fil.csv")
+```
+
+# Manual selection of novel words
+
+# Radomize novel words (Only ran once)
+```{r, eval = F}
+novelNLearn <- read.csv("/Users/jojohu/Documents/Splash/cloze_analysis/stim_word/selected_novel_noun.csv")
+
+# Demo story used "fawsh" already
+novelNLearn <- novelNLearn[-which(novelNLearn$novel_noun_learn %in% "fawsh"),]
+
+novelNLearn <- data.frame(novelNLearn)
+
+novelNLearn[sample(1:nrow(novelNLearn)), ]
+```
+
+# To do: Clearpond Orthographic and Phonological features for monosyllabic, bisyllabic novel words
+
+
+
+
+
