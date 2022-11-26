@@ -1,0 +1,187 @@
+---
+title: "scq_current_scoring"
+author: "Jojo Hu"
+date: "2/10/2021"
+output: html_document
+---
+
+# Calculate SCQ scores from BLAST Redcap
+```{r}
+scq <- read.csv("/Users/jojohu/Documents/Qlab/blast_online_data/QLABBLASTProject-SCQScores_DATA_2021-08-04_0056.csv")
+
+scq <- 
+  scq[,!colnames(scq) %in% c("redcap_event_name", "redcap_repeat_instrument", "redcap_repeat_instance",
+                             "scq_6d58ed_complete", "scq_relation_with_child_4682f2",
+                             "scq_other_relation_491134")]
+
+# Filter out incomplete responses (if the first question in SCQ is NA)
+# To Do: add in more sophisticated filters (e.g., questions 2 - 7 can be NAs)
+scq <- subset(scq, !is.na(child_phrases_97b7f8))
+
+# Rename columns
+colnames(scq) <- c("part_id", "scq_web_date", as.character(1:40))
+
+# Code the responses for score calculation, 1 is "Yes" 0 is "No"
+scq[,c(as.character(c(2, 9, 19:40)))] <-
+  lapply(scq[,c(as.character(c(2, 9, 19:40)))], 
+         function(x) {
+           ifelse(x == 1, 0, 1) # Question 2, 9, and 19 to 40 scored as 0 when 1 ("Yes") is selected
+         })
+
+scq[,c(as.character(c(3:8, 10:18)))] <-
+  lapply(scq[,c(as.character(c(3:8, 10:18)))], 
+         function(x) {
+           ifelse(x == 1, 1, 0) # Question 3 to 8, and 10 to 18 scored as 1 when 1 ("Yes") is selected
+         })
+
+# Sum SCQ totoal scores based on the response to Question 1
+q1Yes <- scq[which(scq$`1` == 1),]
+q1No <- scq[which(scq$`1` == 0),]
+  
+q1Yes$scq_total <- rowSums(q1Yes[,c(as.character(2:40))])
+
+q1No$scq_total <- rowSums(q1No[,c(as.character(8:40))])
+    
+scq_total <- rbind(q1Yes, q1No)
+
+scq_total$scq_rsid  <- rowSums(scq_total[,c(as.character(c(9, 10, 19, 26:33, 36:37, 39:40)))])
+
+scq_total$scq_cd <- rowSums(scq_total[,c(as.character(c(2:6, 20:25, 34:35)))])
+
+scq_total$scq_rrspb <- rowSums(scq_total[,c(as.character(c(7:8, 11:16)))])
+
+# write.csv(scq_total, "/Users/jojohu/Documents/Qlab/manuscript_development/scq_total_redcap.csv")
+```
+
+
+# Do NOT put the original files of this part on Github due to participant names info
+
+# Calculate SMILE SCQ lifetime scores from Qualtrics
+## Clean SMILE SCQ Lifetime data
+```{r}
+scq_smile <- read.csv("/Volumes/data/projects/smile/data/social_cognition/SMILE SCQ Lifetime_November 8, 2022_07.11.csv", stringsAsFactors = F)
+name <- read.csv("/Volumes/data/projects/smile/data/demo/MINDSPLASH-Smilefirstname_DATA_2022-11-08_0917.csv", stringsAsFactors = F)
+scq_complete <- read.csv("/Volumes/data/projects/smile/data/social_cognition/MINDSPLASH-Smiledatacheck_DATA_2022-11-08_0921.csv")
+
+scq_smile <- scq_smile[-2,]
+
+charColname <- as.character(scq_smile[1,])[which(is.na(str_extract(as.character(scq_smile[1,]), "[:digit:]+")))]
+
+questionColname <- str_extract(as.character(scq_smile[1,]), "[:digit:]+")
+
+questionColname <- questionColname[which(!is.na(questionColname))]
+
+colnames(scq_smile) <- c(charColname, questionColname)
+
+scq_smile <-
+  scq_smile %>%
+  mutate(full_name = tolower(`Your Child's Full Name`)) %>%
+  tidyr::separate(full_name, c("first_name_part", "part_last_name"), " ", remove = FALSE)
+
+# complete is 2
+scq_logged <- scq_complete[which(scq_complete$abisscq_links_complete == 2), "record_id"]
+scq_logged <- scq_logged[which(str_detect(scq_logged, "smile_c"))]
+
+name$first_name_part <- tolower(name$first_name_part)
+name$part_last_name <- tolower(name$part_last_name)
+name$full_name <- paste(name$first_name_part, name$part_last_name)
+name <- name[which(name$record_id %in% scq_logged),]
+
+scq_smile <- merge(scq_smile, unique(name[,c("record_id", "full_name")]), by = c("full_name"), all.x = T)
+colnames(scq_smile)[colnames(scq_smile) == "record_id"] <- "record_id_full"
+
+first_name <-
+  name %>%
+  select("record_id", "first_name_part") %>%
+  filter(first_name_part != "")
+
+last_name <-
+  name %>%
+  select("record_id", "part_last_name") %>%
+  filter(part_last_name != "")
+
+scq_smile <- merge(scq_smile, unique(first_name), by = c("first_name_part"), all.x = T)
+colnames(scq_smile)[colnames(scq_smile) == "record_id"] <- "record_id_first"
+
+scq_smile <- merge(scq_smile, unique(last_name), by = c("part_last_name"), all.x = T)
+colnames(scq_smile)[colnames(scq_smile) == "record_id"] <- "record_id_last"
+
+setdiff(scq_logged, scq_smile$record_id_first)
+
+# Extract rows that are duplicatedly matched
+duplicated_match <- which(duplicated(scq_smile[,-which(str_detect(colnames(scq_smile), "record_id"))]))
+
+# Test whether the record IDs merged based on full name, first name, or last name are the same (check if the three columns are the same)
+cols_to_test = c(which(str_detect(colnames(scq_smile), "record_id")))
+unmatch <- which(!rowSums(scq_smile[cols_to_test] == scq_smile[, cols_to_test[1]]) == length(cols_to_test))
+
+# Get rid of the rows that are both duplicated match and unmatched
+scq_smile <- scq_smile[-c(duplicated_match[which(duplicated_match %in% unmatch)]),]
+
+duplicated_match <- which(duplicated(scq_smile[,-which(str_detect(colnames(scq_smile), "record_id"))]))
+
+cols_to_test = c("record_id_first", "record_id_last")
+unmatch <- which(!rowSums(scq_smile[cols_to_test] == scq_smile[, cols_to_test[1]]) == length(cols_to_test))
+
+scq_smile <- scq_smile[-c(duplicated_match[which(duplicated_match %in% unmatch)]),]
+
+duplicated_match <- which(duplicated(scq_smile[,-which(str_detect(colnames(scq_smile), "record_id"))]))
+
+scq_smile$record_id <- coalesce(scq_smile$record_id_full, scq_smile$record_id_first)
+
+scq_smile$record_id <- coalesce(scq_smile$record_id, scq_smile$record_id_last)
+
+scq_smile <-
+  scq_smile %>%
+  select(-one_of("record_id_full", "record_id_first", "record_id_last")) %>%
+  distinct(.)
+
+scq_smile <- scq_smile[which(str_detect(scq_smile$record_id, "smile_c")),]
+```
+
+
+## Manually check why these participants do not have SCQ data though they are marked as completed on Redcap, do they only have ABI-S?
+```{r}
+setdiff(scq_logged, scq_smile$record_id)
+```
+
+
+## Calculate SMILE SCQ lifetime scores from Qualtrics
+```{r}
+# Code the responses for score calculation, 1 is "Yes" 0 is "No"
+scq_smile[,c(as.character(c(2, 9, 19:40)))] <-
+  lapply(scq_smile[,c(as.character(c(2, 9, 19:40)))], 
+         function(x) {
+           ifelse(x == "Yes", 0, 1) # Question 2, 9, and 19 to 40 scored as 0 when 1 ("Yes") is selected
+         })
+
+scq_smile[,c(as.character(c(3:8, 10:18)))] <-
+  lapply(scq_smile[,c(as.character(c(3:8, 10:18)))], 
+         function(x) {
+           ifelse(x == "Yes", 1, 0) # Question 3 to 8, and 10 to 18 scored as 1 when 1 ("Yes") is selected
+         })
+
+# Sum SCQ totoal scores based on the response to Question 1
+q1Yes <- scq_smile[which(scq_smile$`1` == "Yes"),]
+q1No <- scq_smile[which(scq_smile$`1` == "No"),]
+  
+q1Yes$scq_total <- rowSums(q1Yes[,c(as.character(2:40))])
+
+q1No$scq_total <- rowSums(q1No[,c(as.character(8:40))])
+    
+scq_total <- rbind(q1Yes, q1No)
+
+scq_total$scq_rsid  <- rowSums(scq_total[,c(as.character(c(9, 10, 19, 26:33, 36:37, 39:40)))])
+
+scq_total$scq_cd <- rowSums(scq_total[,c(as.character(c(2:6, 20:25, 34:35)))])
+
+scq_total$scq_rrspb <- rowSums(scq_total[,c(as.character(c(7:8, 11:16)))])
+
+scq_total <-
+  scq_total %>%
+  select("record_id", "Recorded Date", as.character(1:40), "scq_total", "scq_rsid", "scq_cd", "scq_rrspb")
+
+write.csv(scq_total, "/Volumes/data/projects/smile/assessments/scq/scq_scores_smile.csv")
+write.csv(scq_total, "/Users/jojohu/Documents/Splash/beh_analysis/social_cognition/scq_scores_smile.csv")
+```
+

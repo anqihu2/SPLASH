@@ -1,0 +1,4268 @@
+---
+title: "splash_beh_analysis"
+author: "Jojo Hu"
+date: "10/1/2021"
+output: html_document
+---
+# Data Prep
+## Get Demo Data
+```{r, include = F}
+library(stringr)
+
+smile_demo <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/demo/MINDSPLASH-Smilechilddob_DATA_2022-11-07_0940.csv")
+
+smile_demo$group <- ifelse(smile_demo$participant_group___1 == 1, "TD", "ASD")
+
+smile_demo$participant_gender <- as.character(smile_demo$participant_gender)
+# SMILE redcap has gender coding reversed... Fix this somewhere
+smile_demo$participant_gender <- plyr::revalue(smile_demo$participant_gender, 
+                                          c("1" = "M",
+                                            "2" = "F"))
+
+smile_demo <- smile_demo[,c("record_id", "group", "participant_gender", "participant_dob")]
+
+smile_demo$short_id <- str_remove(smile_demo$record_id, "smile_c_")
+smile_demo[which(smile_demo$record_id == "smile_c_008"), "short_id"] <- "smileCoo8"
+```
+
+## Get Ipad Data
+```{r, include = F}
+library(reshape2)
+library(dplyr)
+library(purrr)
+
+ipad <-
+  list.files(path = "/Users/jojohu/Documents/Splash/beh_analysis/ipad",
+             pattern = "[[:digit:]] Assessment Scores.csv$", full.names = T, recursive = T)
+
+ipadNAS <-
+  list.files(path = "/Volumes/data/projects/smile/assessments/nih",
+             pattern = "[[:digit:]] Assessment Scores.csv$", full.names = T, recursive = T)
+
+
+ipad <- append(ipad, ipadNAS)
+
+readIpad <- function(file) {
+  temp <- read.csv(file, stringsAsFactors = F)
+  return(temp)
+}
+
+# ipad <- lapply(ipad, readIpad)
+# ipad <- do.call(bind_rows, ipad)
+
+ipad <- 
+  lapply(ipad, readIpad) %>%
+  map_dfr(`[`, c("PIN", "Inst", "Uncorrected.Standard.Score",	"Age.Corrected.Standard.Score",	"National.Percentile..age.adjusted."))  %>%
+  dplyr::bind_rows()
+
+ipad <- ipad[,c("PIN", "Inst", "Uncorrected.Standard.Score",	"Age.Corrected.Standard.Score",	"National.Percentile..age.adjusted.")]
+colnames(ipad) <- c("part_id", "ast", "raw_score", "std_score", "national_percentile")
+ipad$part_id <- tolower(ipad$part_id)
+ipad$ast <- str_extract(ipad$ast, "(Picture Vocab|Oral Reading)")
+
+if(length(which(is.na(ipad$ast) | which(is.na(ipad$raw_score))))) {
+  ipad <- ipad[-which(is.na(ipad$ast)),]
+  ipad <- ipad[-which(is.na(ipad$raw_score)),]
+}
+
+ipad$ast <- 
+  ipad$ast %>%
+  str_replace_all(c("Picture Vocab" = "pvt", "Oral Reading" = "orr"))
+
+# Very important to make sure that there is a unique identifier for every participant, thus no duplicated lines
+ipad <- unique(ipad)
+
+ipadL <- melt(ipad, id.vars = c("part_id", "ast"))
+
+ipadL <-
+  ipadL %>%
+  filter(part_id != "smile_c_300") %>%
+  filter(part_id != "test")
+
+ipadL <- unique(ipadL)
+
+ipadL <- 
+  ipadL %>%
+  filter(!str_detect(part_id, "test"))
+```
+
+
+```{r}
+# Very important to get rid of duplicated IDs in the data frame for this to work:
+ipad <- reshape2::dcast(ipadL, part_id ~ ast + variable)
+
+ipad[which(ipad$part_id == "smile_c-206"),]$part_id <- "smile_c_206"
+ipad[which(ipad$part_id == "ethan"),]$part_id <- "smile_c_001"
+ipad[which(ipad$part_id == "smile_c_446"),]$part_id <- "smile_c__446"
+
+nih_data <- ipad[which(str_detect(ipad$part_id, "smile") | str_detect(ipad$part_id, "blast")),]
+
+# write.csv(ipad, "/Users/jojohu/Documents/Splash/beh_analysis/demo/ipad_scores.csv")
+# write.csv(nih_data, "/Users/jojohu/Documents/Splash/beh_analysis/demo/smile_blast_nih_data.csv")
+# write.csv(nih_data, "/Volumes/data/projects/smile/assessments/nih/smile_blast_nih_data.csv")
+```
+
+## Get Social Cognition Data
+```{r, include = F}
+scq <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/social_cognition/scq_scores_smile.csv")
+mite <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/social_cognition/Mind in the Eyes_November 8, 2022_07.03.csv", stringsAsFactors = F)
+
+# TO DO: Still need to fix the SCQ scoring and ID matching to avoid duplicationS
+scq <- 
+  scq %>% 
+  distinct(record_id, .keep_all = TRUE)
+
+ipad <- merge(ipad, scq[,c("record_id", "scq_total", "scq_rsid", "scq_cd", "scq_rrspb")], 
+              by.x = c("part_id"), by.y = c("record_id"), all = T)
+
+colnames(mite) <- mite[1,]
+
+mite <- mite[-c(1:2),]
+
+mite$record_id <- mite[,c("Please input the SMILE ID numbers here (ex: 001):")]
+
+mite <- mite[,c("record_id", "Recorded Date", "Score")]
+
+# 001 seems to be a test, remove it
+mite <-
+  mite %>%
+  dplyr::filter(!record_id %in% c("001"))
+
+mite[which(!str_detect(mite$record_id, "smile")),]$record_id <- 
+  paste0("smile_c_", mite[which(!str_detect(mite$record_id, "smile")),]$record_id)
+
+mite <- mite[which(str_detect(mite$record_id, "smile_c_[:digit:]")),]
+
+mite$Score <- as.numeric(as.character(mite$Score))
+
+mite <- mite[which(!is.na(mite$Score)),]
+
+colnames(mite)[colnames(mite) == "Score"] <- "mite_total_score"
+
+mite_more <-
+  list.files(path = "/Volumes/data/projects/smile/assessments/mite",
+             pattern = "smile*", full.names = T, recursive = T)
+
+library("readxl")
+
+excel <- ""
+
+readMite <- function(file) {
+  if(str_detect(file, "xlsx")) {
+    part_id <- str_extract(file, "smile_c_[:digit:]+")
+    excel <- readxl::read_excel(file)
+    excel$part_id <- part_id
+  }
+  return(excel)
+}
+
+mite_excel <- lapply(mite_more, readMite)
+
+csv <- ""
+
+readMiteCSV <- function(file) {
+  if(str_detect(file, "csv")) {
+    part_id <- str_extract(file, "smile_c_[:digit:]+")
+    csv <- read.csv(file, stringsAsFactors = F)
+    csv$part_id <- part_id
+  }
+  return(csv)
+}
+
+mite_csv <- lapply(mite_more, readMiteCSV)
+
+mite_excel <- do.call(rbind, mite_excel)
+mite_csv <- do.call(rbind, mite_csv)
+
+mite_more <- dplyr::bind_rows(mite_excel, mite_csv)
+
+mite_more <- 
+  mite_more %>%
+  mutate(mite_indiv_score = ifelse(Response == ANSWER,1,0)) %>%
+  filter(display == "task") %>%
+  dplyr::select(part_id, Response, ANSWER, mite_indiv_score) %>%
+  group_by(part_id) %>%
+  dplyr::summarise(mite_total_score = sum(mite_indiv_score), n = n()) %>%
+  mutate(record_id = part_id) %>%
+  # Check if there are participants who are missing items (Anwer is No)
+  # filter(n != 14) %>%
+  dplyr::select(record_id, mite_total_score)
+
+mite <- 
+  dplyr::bind_rows(mite, mite_more) %>%
+  arrange(record_id)
+
+# ipad <- lapply(ipad, readIpad)
+# ipad <- do.call(bind_rows, ipad)
+# ipad <- 
+#   lapply(ipad, readIpad) %>%
+#   map_dfr(`[`, c("PIN", "Inst", "Uncorrected.Standard.Score",	"Age.Corrected.Standard.Score",	"National.Percentile..age.adjusted."))  %>%
+#   dplyr::bind_rows()
+
+ipad <- merge(ipad, mite[,c("record_id", "mite_total_score")], 
+              by.x = c("part_id"), by.y = c("record_id"), all = T)
+
+ipad <-
+  ipad %>%
+  distinct(.)
+
+# Duplicated scores for smile_c_292 MITE (did twice, but did not have SPLASH data)
+ipad[which(duplicated(ipad$part_id)),]
+```
+
+
+## Compile all Data
+```{r, include = F}
+library(stringr)
+library(dplyr)
+
+output_path <- "/Users/jojohu/Documents/Splash/beh_analysis/results/"
+# https://stackoverflow.com/questions/28700906/r-rbind-a-list-of-data-frames-with-different-columns-in-different-data-frames
+behDF <-
+  list.files(path = "/Users/jojohu/Documents/Splash/beh_analysis",
+             pattern = "data\\S+.csv$", full.names = T, recursive = T)
+
+behDF <- lapply(behDF, read.csv)
+
+# Rbind data frames with different column length, fill = TRUE fills nonmatched columns with NA in the nonmatched dataframe
+library(data.table)
+indx <- sapply(behDF, ncol)
+behDF <- lapply(split(behDF, indx), rbindlist, fill=TRUE )
+
+# Data with 51 columns actually did not have data; failed at eye tracking tests
+behDF <- behDF[-which(names(behDF) %in% c(51, 53))]
+
+colList <- sapply(behDF, colnames)
+colList <- Reduce(intersect, colList)
+
+behDF <- rbindlist(behDF, fill=TRUE)
+behDF$Response <- as.character(behDF$Response)
+behDF <- behDF[which(behDF$Response != ""),]
+```
+
+
+```{r}
+behDF$Participant.Public.ID <- str_pad(behDF$Participant.Public.ID, 3, pad = "0")
+behDF$Participant.Public.ID <- as.character(behDF$Participant.Public.ID)
+behDF[which(!str_detect(behDF$Participant.Public.ID, "smile")),]$Participant.Public.ID <- 
+  paste0("smile_c_", behDF[which(!str_detect(behDF$Participant.Public.ID, "smile")),]$Participant.Public.ID)
+
+behDF <- merge(behDF, smile_demo[,c("record_id", "short_id")], by.x = "Participant.Public.ID", by.y = "short_id", all.x = T)
+
+behDF[which(!is.na(behDF$record_id)),]$Participant.Public.ID <- behDF[which(!is.na(behDF$record_id)),]$record_id
+ 
+# Remove pilot participants and smile_c_011 who only completed half of the task; smile_c_023 did the task over three weeks:
+behDF <- behDF[-which(behDF$Participant.Public.ID == "smile_c_test7" | behDF$Participant.Public.ID == "smile_c_011" | behDF$Participant.Public.ID == "smile_c_904_1"),]
+
+behDF$Participant.Public.ID <- str_extract(behDF$Participant.Public.ID, "smile_c_[[:alnum:]]+")
+
+behDF %>%
+  filter(is.na(Participant.Public.ID)) %>%
+  dplyr::select(Participant.Private.ID)
+
+sort(unique(behDF$Participant.Public.ID))
+
+# Wrong ID was used on Gorilla SPLASH project, must be corrected
+behDF[which(behDF$Participant.Public.ID == "smile_c_384"),]$Participant.Public.ID <- "smile_c_449"
+```
+
+## Merge Demo and medium split age group
+```{r, include = F}
+behDF <- merge(behDF, smile_demo, by.x = "Participant.Public.ID", by.y = "record_id", all.x = T)
+
+# https://stackoverflow.com/questions/13456241/convert-unix-epoch-to-date-object
+behDF$UTC.Date <- as.Date(as.POSIXct(behDF$UTC.Timestamp/1000, origin="1970-01-01"))
+
+behDF$participant_dob <- as.Date(behDF$participant_dob, "%Y-%m-%d")
+
+behDF %>%
+  group_by(group) %>%
+  dplyr::summarise(n = length(unique(Participant.Public.ID)))
+
+behDF %>%
+  filter(is.na(group)) %>%
+  dplyr::select(Participant.Private.ID) %>%
+  distinct(.)
+
+private_id <-
+  behDF %>%
+  dplyr::select(Participant.Public.ID, Participant.Private.ID) %>%
+  distinct(.)
+
+id_group <-
+  behDF %>%
+  dplyr::select(Participant.Public.ID, group) %>%
+  distinct(.)
+
+write.csv(private_id, "/Users/jojohu/Documents/Splash/beh_analysis/demo/private_id.csv", row.names = F)
+write.csv(id_group, "/Users/jojohu/Documents/Splash/beh_analysis/demo/group.csv", row.names = F)
+```
+
+
+# Immediate Recall Analysis
+## Immediate Recall Data Clean up
+```{r, include = F}
+library(stringr)
+immRe <- behDF[which(str_detect(behDF$display, ("videoblock|videoblock_verb"))), ]
+
+splash_date <- unique(immRe[,c("Participant.Public.ID", "UTC.Date", "participant_dob")])
+#Calculate age in months---------------------------------------------------------------------------------------------
+#From Stackoverflow: https://stackoverflow.com/questions/1995933/number-of-months-between-two-dates
+#Answer by https://stackoverflow.com/users/143305/dirk-eddelbuettel
+#Credit to: Dirk Eddelbuettel
+
+# turn a date into a 'monthnumber' relative to an origin
+monnb <- function(d) {
+  lt <- as.POSIXlt(as.Date(d, origin="1900-01-01"))
+  lt$year*12 + lt$mon
+  } 
+# compute a month difference as a difference between two monnb's
+mondf <- function(d1, d2) { 
+  monnb(d2) - monnb(d1) 
+}
+
+#Put month difference into a new column
+for (i in 1:length(splash_date$participant_dob)) { 
+  if (!is.na(splash_date[i, "UTC.Date"])) {
+    splash_date[i, "age_month"] <-
+      mondf(splash_date$participant_dob[i], splash_date$UTC.Date[i])
+  } 
+}
+
+splash_date$age_year <- splash_date$age_month/12
+
+immRe <- merge(immRe, splash_date, by = c("Participant.Public.ID", "UTC.Date", "participant_dob"), all.x = T)
+
+
+immRe <- immRe[,c("Participant.Public.ID", "group", "participant_gender", "age_month", "age_year", 
+                  "Response", "video_file", "UTC.Date", "Event.Index", "Spreadsheet", "Spreadsheet.Row", "Task.Name",
+                  "block", "target", "text_dist",	"taxonomic_dist",	"thematic_dist")]
+immRe <- immRe[which(str_detect(immRe$Response, "(jpg|png)")),]
+
+immRe$video_file <- gsub("$", "", immRe$video_file, fixed = T)
+immRe$video_file <- gsub("{", "", immRe$video_file, fixed = T)
+immRe$video_file <- gsub("_v1|.mp4|}", "", immRe$video_file)
+
+immRe$Response <- gsub("transparent_|.png", "", immRe$Response)
+
+
+immRe$story <- sapply(strsplit(immRe$video_file,"_"), `[`, 1)
+immRe$social_cond <- sapply(strsplit(immRe$video_file,"_"), `[`, 2)
+immRe$listener_side <- sapply(strsplit(immRe$video_file,"_"), `[`, 4)
+immRe[which(is.na(immRe$listener_side)), "listener_side"] <- "left"
+immRe$speaker_side <- NULL
+immRe[which(immRe$listener_side == "right"), "speaker_side"] <- "left"
+immRe[which(immRe$listener_side == "left"), "speaker_side"] <- "right"
+```
+
+# Demo Summary
+```{r}
+demo_wide <- 
+  immRe %>%
+  dplyr::select(Participant.Public.ID, group, age_year) %>%
+  distinct(.) %>%
+  group_by(group) %>%
+  filter(!(Participant.Public.ID == "smile_c_006" & age_year == 8)) %>%
+  filter(!(Participant.Public.ID == "smile_c_037" & age_year == 6)) %>%
+  # filter(age_year < 10) %>%
+  mutate(group = as.factor(group), 
+         age_month = age_year*12)
+
+demo_wideTD <-
+  demo_wide %>%
+  filter(group == "TD") %>%
+  mutate(age_group = c("older", "younger")[1 + (age_year <= median(age_year))])
+
+demo_wideASD <-
+  demo_wide %>%
+  filter(group == "ASD") %>%
+  mutate(age_group = c("older", "younger")[1 + (age_year <= median(age_year))])
+
+demo_wide <- rbind(demo_wideTD, demo_wideASD)
+
+immRe <- immRe[which(immRe$Participant.Public.ID %in% demo_wide$Participant.Public.ID),]
+
+immRe <-
+  immRe %>%
+  dplyr::select(-one_of("age_year", "age_month"))
+
+immRe <- merge(immRe, demo_wide[c("Participant.Public.ID", "group", "age_year", "age_month", "age_group")], 
+               by = c("Participant.Public.ID", "group"), all.x = T)
+
+immRe %>%
+  dplyr::select(Participant.Public.ID, age_year) %>%
+  distinct(.) %>%
+  group_by(Participant.Public.ID) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n > 1)
+
+demo_wide %>%
+  group_by(group) %>%
+  distinct(.) %>%
+  dplyr::summarise(mean_age = mean(age_year, na.rm = T), 
+                   min = min(age_year, na.rm = T), 
+                   max = max(age_year, na.rm = T),
+                   sd = sd(age_year, na.rm = T)) %>%
+  mutate_if(is.numeric, round, digits=2)
+
+
+immRe %>%
+  dplyr::select(Participant.Public.ID, group, participant_gender) %>%
+  distinct(.) %>%
+  group_by(group, participant_gender) %>%
+  dplyr::summarise(n = n()) %>%
+  tidyr::spread(participant_gender, n)
+
+
+demo_wide %>%
+  group_by(group, age_group) %>%
+  distinct(.) %>%
+  dplyr::summarise(mean_age = mean(age_year, na.rm = T), 
+                   min = min(age_year, na.rm = T), 
+                   max = max(age_year, na.rm = T),
+                   sd = sd(age_year, na.rm = T),
+                   n = n()) %>%
+  mutate_if(is.numeric, round, digits=2)
+```
+
+# Demo Analyses
+```{r}
+# Age
+t.test(age_year~group, data = demo_wide)
+
+# Gender
+library(reshape)
+
+gender_wide <- 
+  immRe %>%
+  dplyr::select(Participant.Public.ID, group, participant_gender) %>%
+  distinct(.) 
+
+gender_long <- melt(gender_wide, id.vars = c("Participant.Public.ID", "group"))
+
+gender_wide <- cast(gender_long, group~value, length)
+
+# Chi-square on gender
+# p<0.05 tells us that they are not matched for gender between group
+print(chisq.test(gender_wide))
+
+```
+
+
+
+```{r, eval = F, include = F}
+# Match between groups
+
+# library(MatchIt)  
+# 
+# matchFunc <- function(seed, dataf) {
+#   set.seed(seed)
+#   
+#   matchit <-matchit(group ~ age_year, data = dataf, method="optimal")
+#   
+#   m.data1 <- match.data(matchit, data = dataf, distance = "prop.score")
+#   
+#   m.data2 <- m.data1[,c("Participant.Public.ID", "group", "age_year")]
+#   
+#   m.data2ASD <- subset(m.data2, group == "ASD")
+#   m.data2TD <- subset(m.data2, group == "TD")
+# 
+#   outputDF <- dataf[which(dataf$Participant.Public.ID %in% m.data2$Participant.Public.ID),]
+#   
+#   return(outputDF)
+# }
+# 
+# demo_wide <- matchFunc(1234, demo_wide)
+# 
+# demo_wide %>%
+#   group_by(group) %>%
+#   dplyr::summarise(n = n(), age = mean(age_year), sd = sd(age_year), min_age = min(age_year), max_age = max(age_year)) %>%
+#   mutate_if(is.numeric, round, 2)
+# 
+# immRe <- immRe[which(immRe$Participant.Public.ID %in% demo_wide$Participant.Public.ID),]
+```
+
+
+```{r, include = F}
+library(dplyr)
+library(reshape2)
+answer <- read.csv("/Users/jojohu/Documents/Splash/design/bigListA.csv", stringsAsFactors = F)[,c("story", "novel_word", "key", "word_type",
+                                                                                                  "thematic_dist", "text_dist", "taxonomic_dist", 
+                                                                                                  "thematic_pdist", "text_pdist", "taxonomic_pdist")]
+answer <- unique(answer)
+
+# Find the actual verb trial responses
+colImm <- c("Participant.Public.ID", "video_file", "story", "target", "text_dist",	"taxonomic_dist",	"thematic_dist")
+
+longVerb <- melt(immRe[, ..colImm], id.vars = c("Participant.Public.ID", "video_file", "story"))
+longVerb <- unique(longVerb)
+  
+colnames(longVerb)[colnames(longVerb) %in% "variable"] <- "verb_key"
+colnames(longVerb)[colnames(longVerb) %in% "value"] <- "verb_response"
+
+immRe <- merge(immRe, longVerb, by.x = c("Participant.Public.ID", "video_file",  "story", "Response"), 
+               by.y = c("Participant.Public.ID", "video_file", "story", "verb_key"), all.x = T)
+  
+immRe[which(!is.na(immRe$verb_response)), "Response"] <- immRe[which(!is.na(immRe$verb_response)), "verb_response"]
+
+# Remove the wrong immediate test trials (very few participants had wrong story and test phase match due to Gorilla errors)
+longVerb <-
+  longVerb %>%
+  arrange(Participant.Public.ID, story, video_file)
+
+answerL <- unique(melt(answer[,c("story", "key", "text_dist",	"taxonomic_dist",	"thematic_dist")], id.vars = c("story")))
+
+longVerb <- merge(longVerb, answerL, by.x = c("story", "verb_response"), by.y = c("story", "value"), all.x = T)
+```
+
+```{r, include = F}
+# Extract and remove the wrong story trials for the corresponding participants
+wrongTrial <- unique(longVerb[which(is.na(longVerb$variable)),])
+
+wrongTest <- immRe[which(immRe$Participant.Public.ID %in% wrongTrial$Participant.Public.ID & 
+                        immRe$video_file %in% wrongTrial$video_file),]
+
+if(nrow(wrongTrial) > 0) {
+  immRe <- immRe[-which(immRe$Participant.Public.ID %in% wrongTrial$Participant.Public.ID & 
+                        immRe$video_file %in% wrongTrial$video_file),]
+}
+# Remove the multiple keypresses, take the last keypress
+# immRe <- unique(immRe)
+immRe <- 
+  immRe %>%
+  group_by(Participant.Public.ID, story, video_file) %>%
+  arrange(Participant.Public.ID, story, video_file, Event.Index) %>%
+  filter(row_number()==n())
+
+# Make sure there is only one trial per story per participant, 0 rows expected
+immRe %>%
+  group_by(Participant.Public.ID, story) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n > 1)
+
+nrow(immRe) == nrow(unique(immRe[,c("Participant.Public.ID", "video_file")]))
+
+## Save this for extracting eye tracking videos to code
+# write.csv(immRe, "/Users/jojohu/Documents/Splash/beh_analysis/results/immRe.csv", row.names = F)
+```
+
+
+
+## Calculate Immediate Recall Accuracy
+```{r, include = F}
+immRe <- merge(immRe, answer[,c("story", "key", "word_type")], by.x = "story", by.y = "story", all.x = T)
+# To Do: Manually Score the participant that does not have verb story scores and merge smile_c_003 data
+immRe[which(str_detect(immRe$Response,"transparent")), "Response"] <- NA
+
+immRe$corr <- ifelse(immRe$Response ==immRe$key, 1, 0)
+
+write.csv(immRe, "/Users/jojohu/Documents/Splash/beh_analysis/results/immRe_data.csv", row.names = F)
+```
+
+
+
+## Change data and subset groups (Change who to include based on trial numbers)
+**n > 1: include everyone; n > 20: include full data set**
+```{r}
+# Remove those that have too few learning trials
+fullImmID <-
+  immRe %>%
+  group_by(Participant.Public.ID, story) %>%
+  distinct(.) %>%
+  group_by(Participant.Public.ID) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n > 1)
+
+immRe <- immRe[which(immRe$Participant.Public.ID %in% fullImmID$Participant.Public.ID),]
+```
+
+```{r}
+immRe$group <- as.factor(immRe$group)
+immRe$age_group <- as.factor(immRe$age_group)
+immRe$social_cond <- as.factor(immRe$social_cond)
+immRe$word_type <- as.factor(immRe$word_type)
+immRe$Participant.Public.ID <- as.factor(immRe$Participant.Public.ID)
+
+immRe$scaled_age <- scale(immRe$age_year, center = T)
+
+immRe <- merge(immRe, ipad, by.x = "Participant.Public.ID", by.y = "part_id", all.x = T)
+
+immRe$group <- factor(immRe$group, levels = c("ASD", "TD"))
+immRe <- immRe[order(immRe$group),]
+
+immRe$social_cond <- factor(immRe$social_cond, levels = c("front", "side"))
+immRe <- immRe[order(immRe$social_cond),]
+
+immRe$word_type <- factor(immRe$word_type, levels = c("noun", "verb"))
+immRe <- immRe[order(immRe$word_type),]
+
+immReTD <- immRe[which(immRe$group == "TD"),]
+immReASD <- immRe[which(immRe$group == "ASD"),]
+
+immReTD$social_cond <- factor(immReTD$social_cond, levels = c("front", "side"))
+immReTD <- immReTD[order(immReTD$social_cond),]
+
+immRe %>%
+  group_by(group, social_cond) %>%
+  dplyr::summarise(n = sum(length(unique(Participant.Public.ID))))
+```
+
+
+# Immediate Recall Group Analysis (Binomial Accuracy Models)
+```{r}
+library(lmerTest)
+
+simple_immRe <- glmer(corr ~ group*social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immRe,
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_immRe)
+
+simple_immRe2 <- glmer(corr ~ group*social_cond*scaled_age + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immRe,
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_immRe2)
+
+m1_immRe <- glmer(corr ~ group*social_cond*scaled_age*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immRe,
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_immRe)
+
+## with PVT and MITE (Need to scale them as the scores have larger range)
+immRe$scaled_pvt_all <- scale(immRe$pvt_std_score)
+immRe$scaled_mite_all <- scale(immRe$mite_total_score)
+
+m2_immRe <- glmer(corr ~ group*social_cond*scaled_age*word_type*scaled_pvt_all + 
+                    (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immRe,
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m2_immRe)
+
+m3_immRe <- glmer(corr ~ group*social_cond*scaled_age*word_type*scaled_mite_all + 
+                    (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immRe,
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m3_immRe)
+```
+
+
+## Follow up for Immediate Recall Group Analysis By Diagnostic Group
+## Immediate Recall TD Analysis
+```{r}
+immReTD$scaled_age_td <- scale(immReTD$age_year)
+
+simple_immReTD <- glmer(corr ~ social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReTD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_immReTD)
+
+simple_immReTD2 <- glmer(corr ~ social_cond*scaled_age_td + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReTD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_immReTD2)
+
+m1_immReTD <- glmer(corr ~ social_cond*scaled_age_td*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReTD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5),
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_immReTD)
+
+
+# with PVT and MITE
+immReTD$scaled_pvt_std <- scale(immReTD$pvt_std_score)
+immReTD$scaled_mite <- scale(immReTD$mite_total_score)
+
+m3_immReTD <- glmer(corr ~ social_cond*word_type*scaled_age_td*scaled_mite + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReTD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5) ),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m3_immReTD)
+
+m2_immReTD <- glmer(corr ~ social_cond*word_type*scaled_age_td*scaled_pvt_std + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReTD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5) ),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m2_immReTD)
+```
+
+## Prep Plotting
+```{r, include = F}
+library(ggplot2)
+styling <-
+  theme(
+      plot.title = element_text(size = 30, face = "bold"),
+      axis.title.x = element_text(size = 26, face = "bold"),
+      axis.title.y = element_text(size = 22, face = "bold"),
+      axis.text = element_text(size = 24, face = "bold"),
+      legend.text = element_text(size = 22, face = "bold"),
+      legend.title = element_text(size = 22, face = "bold"),
+      panel.background = element_rect(fill = "white"),
+      # Set plot background to whit
+      axis.line.x = element_line(colour = "black", size = 1),
+      # Add line to x axis
+      axis.line.y = element_line(colour = "black", size = 1),
+      # Add line to y axis
+      strip.text = element_text(size = 24, face = "bold"),
+      # Change facet text
+      strip.background = element_rect(fill = "white", size = 1),
+      # Change facet color
+      panel.spacing = unit(.05, "lines"),
+      # Add panel border
+      panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+      # Change panel border color and size
+      legend.background = element_rect(fill = "#ffffff00")
+      # strip.text = element_blank()
+      # legend.position = c(.78, 0.85)
+    ) 
+```
+
+
+## Immediate Recall Social Condition Main Effect (from m2_immReTD; overhearing > direct address)
+```{r}
+library(ggbeeswarm)
+
+labsWord <- c("Noun", "Verb")
+names(labsWord) <- c("noun", "verb")
+
+immRe %>%
+  # filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, word_type, social_cond) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing")) %>%
+  ggplot(aes(x = social_cond, y = corr)) +
+  geom_bar(
+    aes(fill = social_cond),
+    position = position_dodge(),
+    width = 0.9,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Immediate Recall Accuracy",
+       x = "Social Condition",  # Change x-axis label
+       y = "Accuracy (%)") +
+  geom_beeswarm(
+    aes(group = Participant.Public.ID),
+    dodge.width = 0.3,
+    cex = 1.5,
+    size = 3,
+    alpha = 0.5,
+    show.legend = FALSE,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  styling
+
+immRe %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, word_type, social_cond) %>%
+  dplyr::summarise(mean_acc = mean(corr, na.rm = T), sd = sd(corr, na.rm = T)) %>%
+  tail(.)
+```
+
+
+## Immediate Recall Social Condition * Age Interaction Effect (from m2_immReTD)
+```{r}
+library(ggbeeswarm)
+
+immRe %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  # group_by(Participant.Public.ID, group, age_year, age_month, age_group, word_type, social_cond) %>%
+  # dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing")) %>%
+  ggplot(aes(x = social_cond, y = corr)) +
+  geom_bar(
+    aes(fill = social_cond),
+    position = position_dodge(),
+    width = 0.9,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  facet_grid(~group + age_group,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Immediate Recall Accuracy",
+       x = "Social Condition",  # Change x-axis label
+       y = "Accuracy (%)") +
+  geom_beeswarm(
+    aes(group = Participant.Public.ID),
+    dodge.width = 0.3,
+    cex = 1.5,
+    size = 3,
+    alpha = 0.5,
+    show.legend = FALSE,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  styling
+
+
+immRe %>%
+  filter(group == "TD") %>%
+  group_by(group, age_group, social_cond) %>%
+  dplyr::summarise(mean_acc = mean(corr, na.rm = T))
+```
+
+
+
+
+## Immediate Recall ASD Analysis
+```{r}
+immReASD$scaled_age_asd <- scale(immReASD$age_year)
+
+simple_immReASD <- glmer(corr ~ social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReASD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_immReASD)
+
+simple_immReASD2 <- glmer(corr ~ social_cond*scaled_age_asd + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReASD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_immReASD2)
+
+simple_immReASD3 <- glmer(corr ~ social_cond*scaled_age_asd*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReASD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5),
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_immReASD3)
+
+m1_immReASD <- glmer(corr ~ social_cond*scaled_age_asd*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReASD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_immReASD)
+
+immReASD$scaled_pvt_std <- scale(immReASD$pvt_std_score)
+immReASD$scaled_mite <- scale(immReASD$mite_total_score)
+
+m2_immReASD <- glmer(corr ~ social_cond*word_type*scaled_age_asd*scaled_pvt_std + 
+                       (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReASD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m2_immReASD)
+
+m3_immReASD <- glmer(corr ~ social_cond*word_type*scaled_age_asd*scaled_mite + 
+                       (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReASD,
+                   family = binomial,
+                   contrasts = list(social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m3_immReASD)
+```
+
+
+## Immediate Recall Social Condition * Word Type * Age Effect (from multiple ASD models)
+```{r}
+library(ggbeeswarm)
+
+labsWord <- c("Noun", "Verb")
+names(labsWord) <- c("noun", "verb")
+
+immRe %>%
+  filter(group == "ASD") %>%
+  filter(!is.na(corr)) %>%
+  # group_by(Participant.Public.ID, group, age_year, age_month, age_group, word_type, social_cond) %>%
+  # dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing")) %>%
+  ggplot(aes(x = social_cond, y = corr)) +
+  geom_bar(
+    aes(fill = social_cond),
+    position = position_dodge(),
+    width = 0.9,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  facet_grid(~group + age_group + word_type,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Immediate Recall Accuracy",
+       x = "Social Condition",  # Change x-axis label
+       y = "Accuracy (%)") +
+  geom_beeswarm(
+    aes(group = Participant.Public.ID),
+    dodge.width = 0.3,
+    cex = 1.5,
+    size = 3,
+    alpha = 0.5,
+    show.legend = FALSE,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  styling
+```
+
+
+```{r, include = F, eval = F}
+## Follow up for Immediate Recall Group Analysis By Age Group
+m1_immReOld <- glmer(corr ~ group*social_cond*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immRe[which(immRe$age_group == "older"),],
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_immReOld)
+
+m1_immReYoungASD <- glmer(corr ~ social_cond*word_type*scaled_mite  + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReASD[which(immReASD$age_group == "younger"),],
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_immReYoungASD)
+
+m1_immReOldASD <- glmer(corr ~ social_cond*word_type*scaled_mite  + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = immReASD[which(immReASD$age_group == "older"),],
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_immReOldASD)
+```
+
+
+
+# Immediate Recall Individual Difference Analysis
+## Calculate mean accuracy by subject (meanAcc)
+```{r}
+## Calculate Individual Mean Accuracy
+meanAccImm <- 
+  immRe %>%
+  group_by(Participant.Public.ID, group, age_year, age_month, age_group, word_type, social_cond, pvt_raw_score,
+           pvt_std_score, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond)
+
+meanAccImmLog <- 
+  immRe %>%
+  group_by(Participant.Public.ID, group, age_year, age_month, age_group, social_cond, pvt_raw_score,
+           pvt_std_score, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, social_cond) %>%
+  mutate(corr_log = log(corr))
+```
+
+
+## Immediate Recall TD Against Chance-level
+```{r}
+t_test_against_chance <- 
+  function(x){
+  test <- t.test(x, mu=0.25, alternative= "greater")
+  data.frame(p_value = test$p.value,
+             df = test$parameter,
+             t_stat = test$statistic)
+  }
+
+wrap_t <-
+  function(meanDF, groupID, conditionID) {
+  temp <-
+  meanDF %>%
+  filter(group == groupID) %>%
+  filter(social_cond == conditionID) %>%
+  group_by(Participant.Public.ID) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n())
+  
+  t_result <-
+    sapply(colnames(temp)[str_detect(colnames(temp) ,"corr")], 
+       function(x) t_test_against_chance(temp[,x]))
+  
+  return(t_result)
+  }
+
+wrap_t(meanAccImm, "TD", "front")
+wrap_t(meanAccImm, "ASD", "front")
+wrap_t(meanAccImm, "TD", "side")
+wrap_t(meanAccImm, "ASD", "side")
+
+meanAccImmD <-
+  meanAccImm %>%
+  filter(social_cond == "front")
+
+meanAccImmO <-
+  meanAccImm %>%
+  filter(social_cond == "side")
+
+t.test(corr~group, data = meanAccImmD)
+t.test(corr~group, data = meanAccImmO)
+```
+
+
+
+
+# Mediation Analyses
+```{r}
+# Invididuals missing PVT
+immRe %>%
+  filter(is.na(pvt_std_score)) %>%
+  dplyr::select(Participant.Public.ID, group) %>%
+  group_by(group) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = n())
+
+# Invididuals missing MITE
+immRe %>%
+  filter(is.na(mite_total_score)) %>%
+  dplyr::select(Participant.Public.ID, group) %>%
+  group_by(group) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = n())
+```
+
+
+```{r, include = F}
+library(mediation)
+
+medSocial <-
+function(social, diagnostic_group, age, mediator, seed) {
+  set.seed(seed)
+  meanAccImmOH <-
+    meanAccImmLog %>%
+    filter(social_cond == social) %>%
+    filter(group == diagnostic_group)
+  
+  if(age != "all") {
+    meanAccImmOH <-
+      meanAccImmOH %>%
+      filter(age_group == age)
+  }
+  
+  meanAccImmOH[,c("scaled_mediator")] <- scale(meanAccImmOH[,c(mediator)])
+  meanAccImmOH[,c("scaled_age")] <- scale(meanAccImmOH$age_year)
+  
+  # model.M <- lm(M ~ X, myData)
+  # model.Y <- lm(Y ~ X + M, myData)
+  # results <- mediate(model.M, model.Y, treat='X', mediator='M',
+  #                    boot=TRUE, sims=100)
+  
+  # Using non-scale is the same
+  model.M <- lm(scaled_mediator ~ scaled_age, data = meanAccImmOH)
+  model.Y <- lm(corr_log ~ scaled_age + scaled_mediator, data = meanAccImmOH)
+  results <- mediate(model.M, model.Y, treat='scaled_age', mediator='scaled_mediator',
+                     boot=TRUE, sims=100)
+  resultsTemp <- summary(results)
+  
+  return(resultsTemp)
+}
+```
+
+```{r}
+# Accuracy and Age Relationship is fully mediated by PVT
+medSocial("side", "TD", "all", "pvt_raw_score", 123)
+medSocial("front", "TD", "all", "pvt_raw_score", 124)
+
+# Accuracy and Age Relationship is not mediated by MITE
+medSocial("side", "TD","all", "mite_total_score", 125)
+medSocial("front", "TD", "all","mite_total_score", 126)
+
+medSocial("side", "ASD", "all", "mite_total_score", 127)
+medSocial("front", "ASD", "all", "mite_total_score", 128)
+
+medSocial("side", "ASD", "all", "pvt_raw_score", 127)
+medSocial("front", "ASD", "all", "pvt_raw_score", 128)
+```
+
+
+
+## Plot Social Condition and PVT 
+**(Significant in TD; Marginal in ASD in GLMER model)**
+```{r}
+meanAccImm %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, pvt_std_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                pvt_std_score = as.numeric(as.character(pvt_std_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = pvt_std_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Immediate Recall Accuracy",
+       x = "PVT Standard Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+```
+
+
+## Plot TD Social * Age * PVT Interaction
+```{r}
+meanAccImm %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, pvt_raw_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                pvt_raw_score = as.numeric(as.character(pvt_raw_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = pvt_raw_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group + age_group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Immediate Recall Accuracy",
+       x = "PVT Raw Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+
+# N for this plot
+meanAccImm %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  filter(!is.na(pvt_std_score)) %>%
+  group_by(group, age_group, social_cond) %>%
+  distinct(.) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = length(unique(Participant.Public.ID))) %>%
+  arrange(group, social_cond) 
+```
+
+
+## Plot Social Condition and MITE 
+**(Significant in TD; Marginal in ASD in GLMER model)**
+```{r}
+meanAccImm %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                mite_total_score = as.numeric(as.character(mite_total_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = mite_total_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    # position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Immediate Recall Accuracy",
+       x = "MITE Total Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+```
+
+## Plot ASD Social * Age * Mite Interaction
+```{r}
+meanAccImm %>%
+  filter(group == "ASD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                mite_total_score = as.numeric(as.character(mite_total_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = mite_total_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    # position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group + age_group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Immediate Recall Accuracy",
+       x = "MITE Total Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+
+# N for this plot
+meanAccImm %>%
+  filter(group == "ASD") %>%
+  filter(!is.na(corr)) %>%
+  filter(!is.na(mite_total_score)) %>%
+  group_by(group, age_group, social_cond) %>%
+  distinct(.) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = length(unique(Participant.Public.ID))) %>%
+  arrange(group, social_cond) 
+```
+
+
+## Plot Age Effect Continuous
+```{r}
+meanAccImm %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_year, social_cond) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = age_year, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    # position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Immediate Recall Accuracy",
+       x = "Age (years)",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+```
+
+
+
+
+
+# Block Test, Immediate Retention, and Delayed Retention Clean up
+```{r, include = F}
+library(reshape2)
+blockRe <- behDF[which(str_detect(behDF$display, ("block_test|block_testV|post-test|post-testV")) & str_detect(behDF$Response, ("jpg|png"))),]
+
+blockRe <- blockRe[,c("Participant.Public.ID", "UTC.Date", "Tree.Node.Key", "Response", "display", "Event.Index", "Spreadsheet", "Spreadsheet.Row", "Task.Name", "block_position", "target", "text_dist",	"taxonomic_dist",	"thematic_dist", "text_pdist",	"taxonomic_pdist",	"thematic_pdist")]
+```
+
+
+# Read in the satndalone retention task data
+```{r, include = F}
+library(dplyr)
+
+moreRe <-
+  list.files(path = "/Users/jojohu/Documents/Splash/beh_analysis/",
+             pattern = "splash_retention.csv$|-oz4o.csv", full.names = T, recursive = T)
+
+read_moreRe <-
+  function(x) {
+    x <- read.csv(x, stringsAsFactors = F)
+    x$Participant.Public.ID <- as.character(x$Participant.Public.ID)
+    x$Reaction.Time <- as.character(x$Reaction.Time)
+    
+    return(x)
+  }
+
+moreRe <- lapply(moreRe, read_moreRe)
+moreRe <- do.call(dplyr::bind_rows, moreRe)
+
+# moreRe %>%
+#   filter(is.na(Participant.Public.ID))
+moreRe$Participant.Public.ID <- as.character(moreRe$Participant.Public.ID)
+moreRe$Participant.Public.ID <- str_pad(moreRe$Participant.Public.ID, 3, pad = "0")
+moreRe[which(!str_detect(moreRe$Participant.Public.ID, "smile")),]$Participant.Public.ID <- 
+  paste0("smile_c_", moreRe[which(!str_detect(moreRe$Participant.Public.ID, "smile")),]$Participant.Public.ID)
+
+moreRe <- moreRe[-which(moreRe$Participant.Public.ID == "smile_c_904_1"),]
+
+moreRe <-
+  moreRe %>%
+  filter(Participant.Public.ID != "smile_c_000") %>%
+  filter(!is.na(Participant.Public.ID))
+
+unique(moreRe$Participant.Public.ID)
+
+moreRe$Participant.Public.ID <- as.factor(moreRe$Participant.Public.ID)
+
+moreRe$UTC.Date <- as.Date(as.POSIXct(moreRe$UTC.Timestamp/1000, origin="1970-01-01"))
+
+blockRe <- dplyr::bind_rows(blockRe, moreRe)
+
+blockRe <- blockRe[,c("Participant.Public.ID", "UTC.Date", "Tree.Node.Key", "Response", "display", "Event.Index", "Spreadsheet", "Spreadsheet.Row", "Task.Name", "block_position", "target", "text_dist",	"taxonomic_dist",	"thematic_dist", "text_pdist",	"taxonomic_pdist",	"thematic_pdist")]
+
+if(length(which(blockRe$display == "practice")) > 0) {
+  blockRe <- blockRe[-which(blockRe$display == "practice"),]
+}
+
+blockRe %>%
+  filter(is.na(Participant.Public.ID)) %>%
+  filter(Event.Index != "END OF FILE")
+```
+
+
+```{r, include = F}
+# Delayed retention for some reason has leading zeros with ID, get rid of leading zeros
+blockRe$Participant.Public.ID <- str_remove(blockRe$Participant.Public.ID, "^0+")
+
+blockRe[which(blockRe$display %in% c("post-test", "post-testV")), c("text_dist", "taxonomic_dist", "thematic_dist")] <- NA
+blockRe[which(blockRe$display %in% c("block_test", "block_testV")), c("text_pdist", "taxonomic_pdist", "thematic_pdist")] <- NA
+blockRe$text_dist <- coalesce(blockRe$text_dist, as.character(blockRe$text_pdist))
+blockRe$taxonomic_dist <- coalesce(blockRe$taxonomic_dist, blockRe$taxonomic_pdist)
+blockRe$thematic_dist <- coalesce(blockRe$thematic_dist, blockRe$thematic_pdist)
+
+blockRe$block <- str_extract(blockRe$block_position, "[:digit:]")
+blockRe$block <- as.numeric(as.character(blockRe$block))
+blockRe <- blockRe[which(str_detect(blockRe$Response, "(jpg|png)")),]
+
+# Important for finding actual verb responses
+blockRe$Response <- str_remove(blockRe$Response, "[:digit:](?=.)")
+blockRe$Response <- str_remove_all(blockRe$Response, "transparent_|.png|p+(?=dist)|p+(?=target)")
+
+blockRe <- 
+  blockRe %>% 
+  dplyr::mutate_at(vars(target, text_dist, taxonomic_dist, thematic_dist), str_remove, "[:digit:](?=.)")
+
+blockRe %>%
+  group_by(Participant.Public.ID, UTC.Date, display) %>%
+  dplyr::summarise(n = n()) %>%
+  tidyr::spread(display, n)
+```
+
+
+# Remove trials that participants did not experience in immediate learning from retention 
+```{r, include = F}
+# Remove wrong test trials during learning by story
+blockReL <- melt(blockRe[,c("Participant.Public.ID", "UTC.Date", "Spreadsheet.Row", "Tree.Node.Key", "Task.Name",
+                                       "target", "text_dist",	"taxonomic_dist",	"thematic_dist")], 
+                          id.vars = c("Participant.Public.ID", "UTC.Date", "Spreadsheet.Row", "Tree.Node.Key", "Task.Name"))
+
+answerLpost <- unique(melt(answer[,c("story", "key", "text_dist",	"taxonomic_dist",	"thematic_dist",
+                                     "text_pdist",	"taxonomic_pdist",	"thematic_pdist")], id.vars = c("story")))
+
+answerLpost <- unique(answerLpost[,-which(names(answerLpost) %in% c("variable"))])
+
+blockReL <- merge(blockReL, answerLpost, by.x = c("value"), by.y = c("value"), all.x = T)
+
+rowStory <- unique(blockReL[,c("Participant.Public.ID", "UTC.Date", "Spreadsheet.Row", "Tree.Node.Key", "story")])
+
+blockRe <- merge(blockRe, rowStory, by.x = c("Participant.Public.ID", "UTC.Date", "Spreadsheet.Row", "Tree.Node.Key"), 
+                 by.y = c("Participant.Public.ID", "UTC.Date", "Spreadsheet.Row", "Tree.Node.Key"), all.x = T)
+
+
+wrongID <- immRe %>%
+  group_by(Participant.Public.ID) %>%
+   dplyr::summarise(n = length(unique(story))) %>%
+   filter(n < 20) %>%
+   dplyr::select(Participant.Public.ID)
+
+if(nrow(wrongID) > 0) {
+  missStory <-
+    immRe %>%
+    filter(Participant.Public.ID %in% wrongID$Participant.Public.ID) %>%
+    group_by(Participant.Public.ID) %>%
+    dplyr::summarise(story = setdiff(unique(answer$story), story))
+  
+  missStory$mismatch <- "wrong"
+  
+  blockRe <-
+    merge(
+      blockRe,
+      missStory,
+      by = c("Participant.Public.ID", "story"),
+      all.x = T
+    )
+  
+  blockRe <- blockRe[-which(blockRe$mismatch == "wrong"), ]
+  
+}
+``` 
+
+
+```{r, include = F}
+# Remove the multiple keypresses, take the last keypress
+blockRe <- 
+  blockRe %>%
+  group_by(Participant.Public.ID, UTC.Date, Spreadsheet.Row) %>%
+  arrange(Participant.Public.ID, UTC.Date, Spreadsheet.Row, Event.Index) %>%
+  filter(row_number()==n())
+
+# Sort data by date and find delayed retention
+test_time <-
+  blockRe %>%
+  group_by(Participant.Public.ID, UTC.Date) %>%
+  arrange(Participant.Public.ID, UTC.Date) %>%
+  dplyr::summarise(test_time = unique(UTC.Date)) %>%
+  group_by(Participant.Public.ID) %>%
+  dplyr::mutate(test_time = LETTERS[row_number()]) %>%
+  dplyr::mutate(test_time = dplyr::recode(test_time,
+                            "A" = "attainment",
+                            "B" = "retention",
+                           "C" = "third_session"))
+
+test_time$session_time <- test_time$test_time
+
+test_time <-
+  test_time %>%
+   mutate(session_time = dplyr::recode(session_time,
+                            "attainment" = "week1",
+                            "retention" = "week2",
+                            "third_session" = "week3"))
+
+# Merge test time with retention data  
+blockRe <- merge(blockRe, test_time, by = c("Participant.Public.ID", "UTC.Date"), all.x = T)
+
+# For participants who have third session, extract their ID for labelling correct attainment vs. retention trials later
+thirdID <- unique(blockRe[which(blockRe$test_time == "third_session"),]$Participant.Public.ID)  
+
+# Make sure there is only less than 20 block test trials per participant and less than 20 post test trials per participant
+blockRe %>%
+  group_by(Participant.Public.ID, test_time, UTC.Date, display) %>%
+  dplyr::summarise(n = n()) %>%
+  tidyr::spread(display, n)
+```
+
+
+```{r, include = F}
+# Find the actual verb trial responses
+colImmB <- c("Participant.Public.ID", "Spreadsheet.Row", "UTC.Date", "Tree.Node.Key", "story", "target", "text_dist",	"taxonomic_dist", "thematic_dist")
+
+longVerbB <- melt(blockRe[,colImmB], id.vars = c("Participant.Public.ID", "Spreadsheet.Row", "UTC.Date", "Tree.Node.Key", "story"))
+longVerbB <- unique(longVerbB)
+  
+colnames(longVerbB)[colnames(longVerbB) %in% "variable"] <- "verb_key"
+colnames(longVerbB)[colnames(longVerbB) %in% "value"] <- "verb_response"
+
+blockRe <- merge(blockRe, longVerbB, by.x = c("Participant.Public.ID",  "Spreadsheet.Row", "UTC.Date", "Tree.Node.Key", "story", "Response"), 
+                 by.y = c("Participant.Public.ID","Spreadsheet.Row", "UTC.Date", "Tree.Node.Key", "story", "verb_key"), all.x = T)
+  
+blockRe[which(!is.na(blockRe$verb_response)), "Response"] <- as.character(blockRe[which(!is.na(blockRe$verb_response)), "verb_response"])
+```
+
+
+# Relabel the attainment and retention trials for participants that had a third session
+```{r, include = F}
+# Remove the block-test trials that were ran at the time of retention because these block-test trials are simply duplicating the post-test trials
+# For participants who have only 2 sessions, yet have block-test at time 2 (IDs that do not have a third session, but block-test trials labelled as retention)
+blockRe <- 
+  blockRe[-which(!blockRe$Participant.Public.ID %in% thirdID &
+                (blockRe$display == "block_testV" | blockRe$display == "block_test" )  &
+                blockRe$test_time == "retention"),]
+
+# For participants who have a third session, relabel attainment vs. retention trials
+storyDate <- merge(immRe, test_time, by = c("Participant.Public.ID", "UTC.Date"), all.x = T)
+
+correctLabel <- storyDate[which(storyDate$Participant.Public.ID %in% thirdID),
+                          c("Participant.Public.ID", "UTC.Date", "story", "test_time", "session_time")]
+
+# Stories run in week1 should be labelled as retention for their block-test and post-test run in week 2
+correctLabel$correct_time <- "temp"
+
+correctLabel[which(correctLabel$session_time == "week1"),]$correct_time <- "retention"
+
+# Stories run in week2 should be labelled as attainment for their block-test and post-test run in week 2
+# Stories labeled as attainment are very long-term retention in post-test run in the third session (don't need to label this; all counted as long-term retention)
+correctLabel[which(correctLabel$session_time == "week2"),]$correct_time <- "attainment"
+
+# For participants who have three sessions, their first two sessions added together should have less than or equal to 20 stories
+correctLabel %>%
+  group_by(Participant.Public.ID) %>%
+  dplyr::summarise(n = n())
+
+# Relabel the block-test and post-test in week2 to the correct labels using stories
+correctLabel <- correctLabel[,c("Participant.Public.ID", "story", "correct_time")]
+
+blockRe <- merge(blockRe, correctLabel, by = c("Participant.Public.ID", "story"), all.x = T)
+
+blockRe <-
+  blockRe %>%
+  mutate(test_time = ifelse(Participant.Public.ID %in% thirdID & 
+                              display %in% c("post-test", "post-testV", "block_test", "block_testV") &
+                              session_time == "week2", correct_time, test_time))
+
+# The block-test trials run with one-week gap from first learning expsoure should be removed
+# If participants did block test in week2 for stories that were learned in week1, remove the trials
+# If the correct label is retention, that means the stories were learned in week 1, remove the block tests for stories learned in week1
+blockRe <- blockRe[-which(blockRe$Participant.Public.ID %in% thirdID & 
+                blockRe$display %in% c("block_test", "block_testV") & 
+                blockRe$test_time == "retention"),]
+
+# Change week3 trials to long retention
+blockRe[which(blockRe$Participant.Public.ID %in% thirdID &
+                blockRe$display %in% c("post-test", "post-testV") &
+                blockRe$test_time == "third_session"),]$test_time <- "long_retention"
+
+# Change week3 trials to retention
+# blockRe[which(blockRe$Participant.Public.ID %in% thirdID &
+#                 blockRe$display %in% c("post-test", "post-testV") &
+#                 blockRe$test_time == "third_session"),]$test_time <- "retention"
+```
+
+
+# Add label for Short-Term retention after all stories VS. one-week-retention
+```{r, include = F}
+blockRe$test_time <- as.character(blockRe$test_time)
+blockRe$test_three <- blockRe$test_time
+
+blockRe[which(blockRe$test_time == "attainment" & blockRe$display %in% c("post-test", "post-testV")),]$test_time <- "short_retention"
+```
+
+
+# Remove the Attainment and Retention trials that are not in Immediate Recall
+```{r, include = F}
+# Remove the trials that the participants have not experienced from their Attainment or Retention trials
+immStory <- 
+  immRe %>%
+  dplyr::select(Participant.Public.ID, story) %>%
+  distinct(.) %>%
+  mutate(inImm = 1)
+
+blockRe <- 
+  merge(blockRe, immStory, by.x = c("Participant.Public.ID", "story"), by.y =  c("Participant.Public.ID", "story"), all.x = T)
+
+removeImm <- 
+  blockRe %>%
+  filter(is.na(inImm))
+
+if(nrow(removeImm) > 0) {
+  print("Have not removed the trials that the participants have not experienced from their Attainment or Retention trials.")
+}
+
+blockRe <-
+  blockRe %>%
+  dplyr::select(-one_of("inImm"))
+
+blockRe %>%
+  group_by(Participant.Public.ID, test_time, UTC.Date, display) %>%
+  dplyr::summarise(n = n()) %>%
+  tidyr::spread(display, n)
+```
+
+
+
+# Calculate Accuracy for block test, immediate retention, delayed retention
+```{r, include = F}
+blockRe <- merge(blockRe, answer[,c("story", "key", "word_type")], by.x = "story", by.y = "story", all.x = T)
+blockRe <- merge(blockRe, unique(immRe[,c("Participant.Public.ID", "group", "participant_gender", 
+                                          "age_month", "age_year", "story", "social_cond", "age_group")]), 
+                 by.x = c("Participant.Public.ID", "story"), 
+                 by.y = c("Participant.Public.ID", "story"), all.x = T)
+# To Do: Manually Score the participant that does not have verb story scores and merge smile_c_003 data
+blockRe[which(str_detect(blockRe$Response,"transparent")), "Response"] <- NA
+
+blockRe$corr <- ifelse(blockRe$Response ==blockRe$key, 1, 0)
+```
+
+# Change data and subset groups (full dataset: any number of trials)
+```{r}
+fullReID <-
+  blockRe %>%
+  group_by(Participant.Public.ID, test_time, UTC.Date) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n > 1) %>%
+  mutate(full_data = 1)
+
+blockRe <- 
+  merge(blockRe, fullReID, by = c("Participant.Public.ID", "test_time", "UTC.Date"), all.x = T) %>%
+  filter(full_data == 1) %>%
+  dplyr::select(-one_of("full_data", "n"))
+
+blockRe <- blockRe[which(blockRe$Participant.Public.ID %in% immRe$Participant.Public.ID),]
+
+blockRe %>% 
+  filter(is.na(group))
+
+blockRe %>%
+  group_by(Participant.Public.ID, test_time, UTC.Date) %>%
+  dplyr::summarise(n = n())
+```
+
+
+```{r}
+blockRe$group <- as.factor(blockRe$group)
+blockRe$age_group <- as.factor(blockRe$age_group)
+blockRe$social_cond <- as.factor(blockRe$social_cond)
+blockRe$word_type <- as.factor(blockRe$word_type)
+blockRe$test_time <- as.factor(blockRe$test_time)
+blockRe$test_three <- as.factor(blockRe$test_three)
+blockRe$Participant.Public.ID <- as.factor(blockRe$Participant.Public.ID)
+
+blockRe <-
+  blockRe %>%
+  mutate(social_cond = dplyr::recode(social_cond, front = "Direct", side = "Overhearing"))
+
+blockRe$group <- factor(blockRe$group, levels = c("ASD", "TD"))
+blockRe <- blockRe[order(blockRe$group),]
+
+blockRe$social_cond <- factor(blockRe$social_cond, levels = c("Direct", "Overhearing"))
+blockRe <- blockRe[order(blockRe$social_cond),]
+
+blockRe$word_type <- factor(blockRe$word_type, levels = c("noun", "verb"))
+blockRe <- blockRe[order(blockRe$word_type),]
+
+blockRe$scaled_age <- scale(blockRe$age_year, center = T)
+
+blockRe$test_time <- factor(blockRe$test_time, levels = c("attainment", "short_retention", "retention"))
+blockRe <- blockRe[order(blockRe$test_time),]
+
+blockRe$test_three <- factor(blockRe$test_three, levels = c("attainment", "retention"))
+blockRe <- blockRe[order(blockRe$test_three),]
+
+blockRe <- merge(blockRe, ipad, by.x = "Participant.Public.ID", by.y = "part_id", all.x = T)
+
+blockReTD <- blockRe[which(blockRe$group == "TD"),]
+blockReASD <- blockRe[which(blockRe$group == "ASD"),]
+
+# three_helmert = matrix(c(2/3, -1/3, -1/3, 0, .5, -.5), ncol = 2)
+three_helmert = matrix(c(-1/3, -1/3, 2/3, -0.5, 0.5, 0), ncol = 2)
+contrasts(blockRe$test_time) = three_helmert
+contrasts(blockReTD$test_time) = three_helmert
+contrasts(blockReASD$test_time) = three_helmert
+
+blockRe %>%
+  group_by(group, test_time) %>%
+  dplyr::summarise(n = sum(!is.na(unique(Participant.Public.ID))))
+```
+
+
+
+
+# Attainment Group Analysis (Binomial Accuracy Models)
+```{r}
+library(lmerTest)
+
+simple_att <- glmer(corr ~ group*social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = blockRe[which(blockRe$test_three == "attainment"),],
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_att)
+
+simple_att2 <- glmer(corr ~ group*social_cond*scaled_age + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = blockRe[which(blockRe$test_three == "attainment"),],
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_att2)
+
+m1_att <- glmer(corr ~ group*social_cond*scaled_age*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = blockRe[which(blockRe$test_three == "attainment"),],
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_att)
+
+## with PVT and MITE (Need to scale them as the scores have larger range)
+blockRe$scaled_pvt_all <- scale(blockRe$pvt_std_score)
+blockRe$scaled_mite_all <- scale(blockRe$mite_total_score)
+
+m3_att <- glmer(corr ~ group*social_cond*word_type*age_year*scaled_mite_all + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment"),],
+                    family = binomial,
+                    contrasts = list(
+                    group = c(-0.5, 0.5),
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m3_att)
+
+m2_att <- glmer(corr ~ group*social_cond*word_type*age_year*scaled_pvt_all + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment"),],
+                    family = binomial,
+                    contrasts = list(
+                    group = c(-0.5, 0.5),
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m2_att)
+```
+
+
+```{r, include = F, eval = F}
+m1_attYoung <- 
+  glmer(corr ~ social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & 
+                                           blockRe$age_group == "younger" &
+                                           blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_attYoung)
+
+m1_attOld <- 
+  glmer(corr ~ social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & 
+                                           blockRe$age_group == "older" &
+                                           blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_attOld)
+
+```
+
+
+## Follow up for Immediate Recall Group Analysis By Diagnostic Group
+## Attainment TD Analysis
+```{r}
+scale_var <-
+  function(df, test_time, group) {
+      df[which(df$test_three == test_time & df$group == group), "scaled_age_group"] <-
+    scale(df[which(df$test_three == test_time & df$group == group),]$age_year)
+
+      df[which(df$test_three == test_time & df$group == group), "scaled_pvt_std"] <-
+    scale(df[which(df$test_three == test_time & df$group == group),]$pvt_std_score)
+
+      df[which(df$test_three == test_time & df$group == group), "scaled_mite"] <-
+    scale(df[which(df$test_three == test_time & df$group == group),]$mite_total_score)
+
+  return(df)
+  }
+
+blockRe <- scale_var(blockRe, "attainment", "TD")
+
+simple_attTD <- glmer(corr ~ social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_attTD)
+
+simple_attTD2 <- glmer(corr ~ social_cond*scaled_age + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_attTD2)
+
+simple_attTD3 <- glmer(corr ~ social_cond*scaled_age*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_attTD3)
+
+m1_attTD <- glmer(corr ~ social_cond*word_type*age_year*scaled_pvt_std + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_attTD)
+
+m2_attTD <- glmer(corr ~ social_cond*word_type*age_year*scaled_mite + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m2_attTD)
+```
+
+
+## Plot Attainment Social Condition Main Effect in TD
+```{r}
+library(ggbeeswarm)
+
+labsWord <- c("Noun", "Verb")
+names(labsWord) <- c("noun", "verb")
+
+blockRe %>%
+  filter(test_three == "attainment") %>%
+  # filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, test_three, word_type, social_cond) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing")) %>%
+  ggplot(aes(x = social_cond, y = corr)) +
+  geom_bar(
+    aes(fill = social_cond),
+    position = position_dodge(),
+    width = 0.9,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  facet_grid(~group + test_three,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Attainment Accuracy",
+       x = "Social Condition",  # Change x-axis label
+       y = "Accuracy (%)") +
+  geom_beeswarm(
+    aes(group = Participant.Public.ID),
+    dodge.width = 0.3,
+    cex = 1.5,
+    size = 3,
+    alpha = 0.5,
+    show.legend = FALSE,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  styling
+
+blockRe %>%
+  # filter(group == "TD") %>%
+  filter(test_three == "attainment") %>%
+  group_by(group, test_three, social_cond) %>%
+  dplyr::summarise(mean_acc = mean(corr, na.rm = T))
+```
+
+
+## Attainment Social Condition * Age Interaction Effect in TD
+```{r}
+library(ggbeeswarm)
+
+labs <- c("Younger Children", "Older Children")
+names(labs) <- c("younger", "older")
+
+blockRe %>%
+    filter(group == "TD") %>%
+    filter(!is.na(corr)) %>%
+    # filter(!is.na(test_three)) %>%
+    filter(test_three == "attainment") %>%
+    arrange(group) %>%
+    mutate(age_group = factor(age_group, levels = c("younger", "older"))) %>%
+    mutate(social_cond = dplyr::recode(social_cond, Direct = "Direct Address"),
+           age_group = dplyr::recode(age_group, younger = "Younger Children", older = "Older Children"),
+           test_three = dplyr::recode(test_three, immediate = "0 min", attainment = "Same-Day", retention = "One Week")) %>%
+    group_by(group, age_group, social_cond, test_three) %>%
+    dplyr::summarise(mean = mean(corr, na.rm = TRUE),
+                    sd = sd(corr, na.rm = TRUE),
+                    n = n()) %>%
+    mutate(se = sd / sqrt(n),
+            lower_ci = mean - qt(1 - (0.05 / 2), n - 1) * se,
+            upper_ci = mean + qt(1 - (0.05 / 2), n - 1) * se) %>%
+    ggplot(aes(x = age_group, y = mean, group = social_cond,  fill = social_cond)) +
+    geom_bar(color = "black",
+              position = position_dodge(),
+              width = 0.7,
+              stat = "summary",
+              fun = "mean",
+             alpha = 0.5) +
+    geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                  width = .1,
+                  position = position_dodge(width = 0.7)) +
+    geom_point(color = "black",
+               position = position_dodge(width=0.7),
+               shape = 21,
+               size = 3,
+               stat = "summary",
+               fun = "mean") +
+    # facet_wrap(~age_group,  labeller = (labeller(age_group = labs))) +
+    # scale_fill_manual(values=c("white", "grey")) +
+   guides(fill = guide_legend(title="Same-Day Test Accuracy")) +
+    labs(y = "Accuracy (%)") +
+    labs(title = "Same-Day Test Accuracy") +
+    styling +
+    guides(fill = guide_legend(title = "Social Condition")) +
+    guides(color = "none") +
+    coord_cartesian(ylim = c(0.5, 1))  +
+    theme(axis.title.x=element_blank()) +
+    geom_segment(aes(x = 1.67, xend = 2.33, y = 0.94, yend = 0.94)) +
+    geom_segment(aes(x = 0.67, xend = 1.33, y = 0.68, yend = 0.68)) +
+    # geom_text(aes(x = 2, y = 0.94, label = paste0("***")), size = 11, color = "black") +
+    geom_segment(aes(x = 1, xend = 2, y = 0.98, yend = 0.98)) +
+    geom_segment(aes(x = 1, xend = 1, y = 0.69, yend = 0.98)) +
+    geom_segment(aes(x = 2, xend = 2, y = 0.95, yend = 0.98)) +
+    geom_segment(aes(x = 1.5, xend = 1.5, y = 0.98, yend = 0.99)) +
+    geom_text(aes(x = 1.5, y = 0.99, label = paste0("*")), size = 11, color = "black")
+
+ggsave(paste0(output_path, "ageTD_att.png"), bg="transparent", width = 25, height = 15, units = "cm")
+
+blockRe %>%
+  filter(group == "TD" & test_three == "attainment") %>%
+  group_by(group, test_three, age_group, social_cond) %>%
+  dplyr::summarise(mean_acc = mean(corr, na.rm = T))
+```
+
+
+## Attainment ASD Analysis
+```{r}
+blockRe <- scale_var(blockRe, "attainment", "ASD")
+
+simple_attASD <- glmer(corr ~ social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & blockRe$group == "ASD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_attASD)
+
+simple_attASD2 <- glmer(corr ~ social_cond*scaled_age + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & blockRe$group == "ASD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_attASD2)
+
+simple_attASD3 <- glmer(corr ~ social_cond*scaled_age*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & blockRe$group == "ASD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_attASD3)
+
+
+m1_attASD <- glmer(corr ~ social_cond*word_type*age_year*scaled_pvt_std + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & blockRe$group == "ASD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_attASD)
+
+m2_attASD <- glmer(corr ~ social_cond*word_type*age_year*scaled_mite + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "attainment" & blockRe$group == "ASD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m2_attASD)
+```
+
+## Attainment Social Condition * Word_Type * Age Interaction Effect in ASD
+```{r}
+library(ggbeeswarm)
+
+blockRe %>%
+  filter(group == "ASD") %>%
+  filter(test_three == "attainment") %>%
+  filter(!is.na(corr)) %>%
+  # group_by(Participant.Public.ID, group, age_year, age_month, age_group, word_type, social_cond) %>%
+  # dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing")) %>%
+  ggplot(aes(x = social_cond, y = corr)) +
+  geom_bar(
+    aes(fill = social_cond),
+    position = position_dodge(),
+    width = 0.9,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  facet_grid(~group + age_group + word_type,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Attainment Accuracy",
+       x = "Social Condition",  # Change x-axis label
+       y = "Accuracy (%)") +
+  geom_beeswarm(
+    aes(group = Participant.Public.ID),
+    dodge.width = 0.3,
+    cex = 1.5,
+    size = 3,
+    alpha = 0.5,
+    show.legend = FALSE,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  styling
+
+blockRe %>%
+  filter(group == "TD" & test_three == "attainment") %>%
+  group_by(group, test_three, age_group, word_type,social_cond) %>%
+  dplyr::summarise(mean_acc = mean(corr, na.rm = T))
+```
+
+
+# Follow-up Analyses on Group Analysis for Attainment
+## Calculate mean accuracy by subject for attainment
+```{r}
+meanAccAtt <-
+  blockRe %>%
+  filter(test_three == "attainment") %>%
+  group_by(Participant.Public.ID, group, age_year, age_month, age_group, test_three, word_type, social_cond, pvt_raw_score,
+           pvt_std_score, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond)
+
+meanAccAttLog <- 
+  meanAccAtt %>%
+  group_by(Participant.Public.ID, group, age_year, age_month, age_group, test_three, social_cond, pvt_raw_score,
+           pvt_std_score, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, social_cond) %>%
+  mutate(corr_log = log(corr))
+
+# Attainment against chance-level
+wrap_t(meanAccAtt, "TD", "Direct")
+wrap_t(meanAccAtt, "TD", "Overhearing")
+wrap_t(meanAccAtt, "ASD", "Direct")
+wrap_t(meanAccAtt, "ASD", "Overhearing")
+
+# Group comparisons
+#TD
+library(tidyr)
+meanAccAttTDOld <-
+  blockRe %>%
+  filter(group == "TD") %>%
+  filter(age_group == "older") %>%
+  group_by(Participant.Public.ID, age_group, social_cond) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  spread(social_cond, corr)
+
+t.test(meanAccAttTDOld$Overhearing, meanAccAttTDOld$Direct, paired = T, alternative = "less")
+
+meanAccAttTDYoung <-
+  meanAccAtt %>%
+  filter(group == "TD") %>%
+  filter(age_group == "younger") %>%
+  group_by(Participant.Public.ID, age_group, social_cond) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  spread(social_cond, corr)
+
+t.test(meanAccAttTDYoung$Overhearing, meanAccAttTDYoung$Direct, paired = T, alternative = "less")
+
+t.test(blockRe[which(blockRe$test_time == "attainment" & blockRe$social_cond == "Direct" & 
+                       blockRe$group == "TD" & blockRe$age_group == "older"),  "corr"], 
+       blockRe[which(blockRe$test_time == "attainment" & blockRe$social_cond == "Direct" & 
+                       blockRe$group == "TD" & blockRe$age_group == "younger"),  "corr"])
+```
+
+
+
+# Attainment Individual Difference Analysis
+```{r}
+# Invididuals missing PVT
+blockRe %>%
+  filter(test_three == "attainment") %>%
+  filter(is.na(pvt_std_score)) %>%
+  dplyr::select(Participant.Public.ID, group) %>%
+  group_by(group) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = n())
+
+# Invididuals missing MITE
+blockRe %>%
+  filter(test_three == "attainment") %>%
+  filter(is.na(mite_total_score)) %>%
+  dplyr::select(Participant.Public.ID, group) %>%
+  group_by(group) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = n())
+```
+
+# Mediation Analyses
+```{r, include = F}
+library(mediation)
+# Cannot use Log scores due to accuracy = 0
+medSocial <-
+function(social, diagnostic_group, age, mediator, seed) {
+  set.seed(seed)
+  meanAccImmOH <-
+    meanAccAttLog %>%
+    filter(social_cond == social) %>%
+    filter(group == diagnostic_group)
+  
+  if(age != "all") {
+    meanAccImmOH <-
+      meanAccImmOH %>%
+      filter(age_group == age)
+  }
+  
+  meanAccImmOH[,c("scaled_mediator")] <- scale(meanAccImmOH[,c(mediator)])
+  meanAccImmOH[,c("scaled_age")] <- scale(meanAccImmOH$age_year)
+  
+  # model.M <- lm(M ~ X, myData)
+  # model.Y <- lm(Y ~ X + M, myData)
+  # results <- mediate(model.M, model.Y, treat='X', mediator='M',
+  #                    boot=TRUE, sims=100)
+  
+  # Using non-scale is the same
+  model.M <- lm(scaled_mediator ~ scaled_age, data = meanAccImmOH)
+  model.Y <- lm(corr ~ scaled_age + scaled_mediator, data = meanAccImmOH)
+  results <- mediate(model.M, model.Y, treat='scaled_age', mediator='scaled_mediator',
+                     boot=TRUE, sims=100)
+  resultsTemp <- summary(results)
+  
+  return(resultsTemp)
+}
+```
+
+```{r}
+# Accuracy and Age Relationship is not mediated by PVT
+medSocial("Overhearing", "TD", "all", "pvt_raw_score", 128)
+medSocial("Direct", "TD", "all", "pvt_raw_score", 129)
+medSocial("Overhearing", "TD", "all", "mite_total_score", 130)
+medSocial("Direct", "TD", "all", "mite_total_score", 131)
+
+# Accuracy and Age Relationship is not mediated by MITE
+medSocial("Overhearing", "ASD", "all", "mite_total_score", 140)
+medSocial("Direct", "ASD", "all", "mite_total_score", 141)
+medSocial("Overhearing", "ASD", "all", "pvt_raw_score", 142)
+medSocial("Direct", "ASD", "all", "pvt_raw_score", 143)
+```
+
+
+
+## Plot ASD Social Condition * MITE (* Age)
+**(Significant in ASD m3_attASD GLMER model)**
+```{r}
+meanAccAtt %>%
+  filter(group == "ASD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                mite_total_score = as.numeric(as.character(mite_total_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = mite_total_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Attainment Accuracy",
+       x = "MITE Total Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+
+meanAccAtt %>%
+  filter(group == "ASD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                mite_total_score = as.numeric(as.character(mite_total_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = mite_total_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group + age_group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Attainment Accuracy",
+       x = "MITE Total Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+
+# N for this plot
+meanAccAtt %>%
+  filter(group == "ASD") %>%
+  filter(!is.na(corr)) %>%
+  filter(!is.na(mite_total_score)) %>%
+  group_by(group, age_group, social_cond) %>%
+  distinct(.) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = length(unique(Participant.Public.ID))) %>%
+  arrange(group, social_cond) 
+```
+
+
+
+## Plot Attainment Age Effect Continuous 
+```{r}
+meanAccAtt %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_year, social_cond) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = age_year, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    # position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Attainment Accuracy",
+       x = "Age (years)",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+```
+
+
+
+
+
+
+
+# Retention Group Analysis (Binomial Accuracy Models)
+```{r}
+simple_ret <- glmer(corr ~ group*social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = blockRe[which(blockRe$test_three == "retention"),],
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_ret)
+
+simple_ret2 <- glmer(corr ~ group*social_cond*scaled_age + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = blockRe[which(blockRe$test_three == "retention"),],
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_ret2)
+
+m1_ret <- glmer(corr ~ group*social_cond*scaled_age*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                   data = blockRe[which(blockRe$test_three == "retention"),],
+                   family = binomial,
+                   contrasts = list(group = c(-0.5, 0.5), 
+                                    social_cond = c(-0.5, 0.5), 
+                                    word_type = c(-0.5, 0.5)),
+                   control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_ret)
+
+m2_ret <- glmer(corr ~ group*social_cond*word_type*age_year*scaled_pvt_all + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention"),],
+                    family = binomial,
+                    contrasts = list(
+                    group = c(-0.5, 0.5),
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m2_ret)
+
+m3_ret <- glmer(corr ~ group*social_cond*word_type*age_year*scaled_mite_all + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention"),],
+                    family = binomial,
+                    contrasts = list(
+                    group = c(-0.5, 0.5),
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m3_ret)
+```
+
+
+
+## Follow up for Retention Group Analysis By Diagnostic Group
+## Retention TD Analysis
+```{r}
+blockRe <- scale_var(blockRe, "retention", "TD")
+
+simple_retTD <- glmer(corr ~ social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention" & blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_retTD)
+
+simple_retTD2 <- glmer(corr ~ social_cond*scaled_age + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention" & blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_retTD2)
+
+simple_retTD3 <- glmer(corr ~ social_cond*scaled_age*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention" & blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_retTD3)
+
+m1_retTD <- glmer(corr ~ social_cond*word_type*scaled_age*scaled_pvt_std + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention" & blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_retTD)
+
+m2_retTD <- glmer(corr ~ social_cond*word_type*scaled_age*scaled_mite + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention" & blockRe$group == "TD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m2_retTD)
+```
+
+## Retention TD Social * Age * Word Type Interaction (Only in simple_retTD3)
+```{r}
+blockRe %>%
+  filter(group == "TD") %>%
+  filter(test_three == "retention") %>%
+  filter(!is.na(corr)) %>%
+  # group_by(Participant.Public.ID, group, age_year, age_month, age_group, word_type, social_cond) %>%
+  # dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing")) %>%
+  ggplot(aes(x = social_cond, y = corr)) +
+  geom_bar(
+    aes(fill = social_cond),
+    position = position_dodge(),
+    width = 0.9,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  facet_grid(~group + age_group + word_type + test_three,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Retention Accuracy",
+       x = "Social Condition",  # Change x-axis label
+       y = "Accuracy (%)") +
+  geom_beeswarm(
+    aes(group = Participant.Public.ID),
+    dodge.width = 0.3,
+    cex = 1.5,
+    size = 3,
+    alpha = 0.5,
+    show.legend = FALSE,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  styling
+
+blockRe %>%
+  filter(group == "TD" & test_three == "retention") %>%
+  group_by(group, test_three, age_group, word_type,social_cond) %>%
+  dplyr::summarise(mean_acc = mean(corr, na.rm = T))
+```
+
+
+## Retention ASD Analysis
+```{r}
+blockRe <- scale_var(blockRe, "retention", "ASD")
+
+simple_retASD <- glmer(corr ~ social_cond + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention" & blockRe$group == "ASD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_retASD)
+
+simple_retASD2 <- glmer(corr ~ social_cond*scaled_age + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention" & blockRe$group == "ASD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_retASD2)
+
+simple_retASD3 <- glmer(corr ~ social_cond*scaled_age*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention" & blockRe$group == "ASD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)
+                   ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_retASD3)
+
+m1_retASD <- glmer(corr ~ social_cond*word_type*scaled_age*scaled_pvt_std + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention" & blockRe$group == "ASD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_retASD)
+
+m2_retASD <- glmer(corr ~ social_cond*word_type*scaled_age*scaled_mite + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = blockRe[which(blockRe$test_three == "retention" & blockRe$group == "ASD"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m2_retASD)
+
+
+blockRe[which(blockRe$test_three == "retention"),] %>%
+  group_by(group, age_group, social_cond, test_three) %>%
+  dplyr::summarise(mean_acc = mean(corr, na.rm = T), n = n())
+```
+
+
+# Retention Individual Difference Analysis
+## Calculate mean accuracy by subject for retention
+```{r}
+meanAccRet <-
+  blockRe %>%
+  filter(test_three == "retention") %>%
+  group_by(Participant.Public.ID, group, age_year, age_month, age_group, test_three, word_type, social_cond, pvt_raw_score,
+           pvt_std_score, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond)
+
+meanAccRetLog <- 
+  meanAccRet %>%
+  group_by(Participant.Public.ID, group, age_year, age_month, age_group, test_three, social_cond, pvt_raw_score,
+           pvt_std_score, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, social_cond) %>%
+  mutate(corr_log = log(corr))
+
+# Against chance-level
+wrap_t(meanAccRet, "TD", "Direct")
+wrap_t(meanAccRet, "TD", "Overhearing")
+wrap_t(meanAccRet, "ASD", "Direct")
+wrap_t(meanAccRet, "ASD", "Overhearing")
+
+# Group comparisons
+#TD
+library(tidyr)
+
+meanAccRetTD <-
+  meanAccRet %>%
+  filter(group == "TD")
+
+t.test(corr~social_cond, paired = T, data = meanAccRetTD, alternative = "greater")
+
+meanAccRetASD <-
+  meanAccRet %>%
+  filter(group == "ASD")
+
+t.test(corr~social_cond, paired = T, data = meanAccRetASD, alternative = "less")
+
+t.test(meanAccAttTDYoung$Overhearing, meanAccAttTDYoung$Direct, paired = T, alternative = "less")
+```
+
+
+
+```{r}
+# Invididuals missing PVT
+blockRe %>%
+  filter(test_three == "retention") %>%
+  filter(is.na(pvt_std_score)) %>%
+  dplyr::select(Participant.Public.ID, group) %>%
+  group_by(group) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = n())
+
+# Invididuals missing MITE
+blockRe %>%
+  filter(test_three == "retention") %>%
+  filter(is.na(mite_total_score)) %>%
+  dplyr::select(Participant.Public.ID, group) %>%
+  group_by(group) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = n())
+```
+
+# Mediation Analyses
+```{r, include = F}
+library(mediation)
+# Cannot use Log scores due to accuracy = 0
+medSocial <-
+function(social, diagnostic_group, age, mediator, seed) {
+  set.seed(seed)
+  meanAccImmOH <-
+    meanAccRetLog %>%
+    filter(social_cond == social) %>%
+    filter(group == diagnostic_group)
+  
+  if(age != "all") {
+    meanAccImmOH <-
+      meanAccImmOH %>%
+      filter(age_group == age)
+  }
+  
+  meanAccImmOH[,c("scaled_mediator")] <- scale(meanAccImmOH[,c(mediator)])
+  meanAccImmOH[,c("scaled_age")] <- scale(meanAccImmOH$age_year)
+  
+  # model.M <- lm(M ~ X, myData)
+  # model.Y <- lm(Y ~ X + M, myData)
+  # results <- mediate(model.M, model.Y, treat='X', mediator='M',
+  #                    boot=TRUE, sims=100)
+  
+  # Using non-scale is the same
+  model.M <- lm(scaled_mediator ~ scaled_age, data = meanAccImmOH)
+  model.Y <- lm(corr ~ scaled_age + scaled_mediator, data = meanAccImmOH)
+  results <- mediate(model.M, model.Y, treat='scaled_age', mediator='scaled_mediator',
+                     boot=TRUE, sims=100)
+  resultsTemp <- summary(results)
+  
+  return(resultsTemp)
+}
+```
+
+```{r}
+# Accuracy and Age Relationship is not mediated by PVT
+medSocial("Overhearing", "TD", "all", "pvt_raw_score", 140)
+medSocial("Direct", "TD", "all", "pvt_raw_score", 141)
+medSocial("Overhearing", "TD", "all", "mite_total_score", 142)
+medSocial("Direct", "TD", "all", "mite_total_score", 143)
+
+# Accuracy and Age Relationship is not mediated by MITE
+medSocial("Overhearing", "ASD", "all", "mite_total_score", 160)
+medSocial("Direct", "ASD", "all", "mite_total_score", 161)
+
+medSocial("Overhearing", "ASD", "all", "pvt_raw_score", 162)
+medSocial("Direct", "ASD", "all", "pvt_raw_score", 163)
+
+```
+
+## Plot TD Social * Age * PVT Interaction
+```{r}
+meanAccRet %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, pvt_raw_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                pvt_raw_score = as.numeric(as.character(pvt_raw_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = pvt_raw_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group + age_group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Immediate Recall Accuracy",
+       x = "PVT Raw Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+
+# N for this plot
+meanAccRet %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  filter(!is.na(pvt_std_score)) %>%
+  group_by(group, age_group, social_cond) %>%
+  distinct(.) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = length(unique(Participant.Public.ID))) %>%
+  arrange(group, social_cond) 
+```
+
+
+
+# Immediate Recall vs. Retention Analysis
+# Combine Immediate Recall, Attainment, and Retention
+```{r, include = F}
+immRe$test_time <- "immediate"
+immRe$test_three <- "immediate"
+  
+allRe <- dplyr::bind_rows(immRe, blockRe)
+
+allRe$test_time <- as.factor(allRe$test_time)
+allRe$test_three <- as.factor(allRe$test_three)
+```
+
+# Change dataset and subset by group for Immediate Recall vs. Retention Analysis
+```{r}
+allRe <-
+  allRe %>%
+  arrange(Participant.Public.ID, Event.Index) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                test_time_num = dplyr::recode(test_three, "immediate" = 1, "attainment" = 2, "retention" = 3))
+
+# allRe$test_time_num <- as.numeric(as.character(allRe$test_time_num))
+allRe$scaled_time <- scale(allRe$test_time_num, center = T)
+allRe$scaled_age <- scale(allRe$age_year, center = T)
+allRe$scaled_pvt <- scale(allRe$pvt_std_score, center = T)
+allRe$scaled_orr <- scale(allRe$orr_std_score, center = T)
+allRe$scaled_mite <- scale(allRe$mite_total_score, center = T)
+allRe$test_time_num <- as.factor(allRe$test_time_num)
+
+
+allRe$group <- factor(allRe$group, levels = c("ASD", "TD"))
+allRe <- allRe[order(allRe$group),]
+
+allRe$social_cond <- factor(allRe$social_cond, levels = c("Direct", "Overhearing"))
+allRe <- allRe[order(allRe$social_cond),]
+
+allRe$test_time <- factor(allRe$test_time, levels = c("immediate", "attainment", "short_retention", "retention"))
+allRe <- allRe[order(allRe$test_time),]
+
+allRe$test_three <- factor(allRe$test_three, levels = c("immediate", "attainment", "retention"))
+allRe <- allRe[order(allRe$test_three),]
+
+allRe$word_type <- factor(allRe$word_type, levels = c("noun", "verb"))
+allRe <- allRe[order(allRe$word_type),]
+
+allReTD <- allRe[which(allRe$group == "TD"),]
+allReASD <- allRe[which(allRe$group == "ASD"),]
+
+# four_helmert = matrix(c(3/4, -1/4, -1/4, -1/4, 0, 2/3, -1/3, -1/3, 0, 0, 1/2, -1/2), ncol = 3)
+
+allRe %>%
+  group_by(group, test_time) %>%
+  dplyr::summarise(n = sum(!is.na(unique(Participant.Public.ID))))
+
+allRe %>%
+  group_by(group, test_time) %>%
+  dplyr::summarise(n = sum(!is.na(unique(Participant.Public.ID))))
+
+allRe %>%
+  dplyr::select(Participant.Public.ID, group, test_three, participant_gender, age_year) %>%
+  distinct(.) %>%
+  group_by(group, test_three) %>%
+  dplyr::summarise(n = sum(!is.na(unique(Participant.Public.ID))), 
+                   mean_age = mean(age_year, na.rm = T),
+                   sd = sd(age_year, na.rm = T))
+
+allRe %>%
+  dplyr::select(Participant.Public.ID, group, test_three, participant_gender, age_year) %>%
+  distinct(.) %>%
+  group_by(group, test_three, participant_gender) %>%
+  dplyr::summarise(n = sum(!is.na(unique(Participant.Public.ID))), 
+                   mean_age = mean(age_year, na.rm = T),
+                   sd = sd(age_year, na.rm = T))
+```
+
+
+# Immediate Recall vs. Retention Analysis
+```{r, include = F}
+immRetention <- allRe[which(allRe$test_three %in% c("immediate", "retention")),]
+
+immRetention <-
+  immRetention %>%
+  dplyr::mutate(test_time_num = dplyr::recode(test_three, "immediate" = 1, "retention" = 2))
+
+immRetention$scaled_time <- scale(immRetention$test_time_num, center = T)
+immRetention$scaled_time <- as.numeric(as.character(immRetention$scaled_time))
+
+immRetention$test_three <- factor(immRetention$test_three, levels = c("immediate", "retention"))
+immRetention <- immRetention[order(immRetention$test_three),]
+
+immRetentionTD <- immRetention[which(immRetention$group == "TD"),]
+immRetentionASD <- immRetention[which(immRetention$group == "ASD"),]
+
+m1_immRetention <- glmer(corr ~ social_cond*test_three*word_type*age_group + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                          data = immRetentionTD,
+                          family = binomial,
+                          contrasts = list(
+                          group = c(-0.5, 0.5),
+                          test_three = c(-0.5, 0.5),
+                          word_type = c(-0.5, 0.5),
+                          social_cond = c(-0.5, 0.5),
+                          age_group = c(-0.5, 0.5)
+                          ),
+                          control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_immRetention)
+
+
+m1_immRetentionOld <- glmer(corr ~ social_cond*test_three*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                          data = immRetentionTD[which(immRetentionTD$age_group == "older"),],
+                          family = binomial,
+                          contrasts = list(
+                          group = c(-0.5, 0.5),
+                          test_three = c(-0.5, 0.5),
+                          word_type = c(-0.5, 0.5),
+                          social_cond = c(-0.5, 0.5),
+                          age_group = c(-0.5, 0.5)
+                          ),
+                          control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_immRetentionOld)
+
+m1_immRetentionYoung <- glmer(corr ~ social_cond*test_three*word_type + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                          data = immRetentionTD[which(immRetentionTD$age_group == "younger"),],
+                          family = binomial,
+                          contrasts = list(
+                          group = c(-0.5, 0.5),
+                          test_three = c(-0.5, 0.5),
+                          word_type = c(-0.5, 0.5),
+                          social_cond = c(-0.5, 0.5),
+                          age_group = c(-0.5, 0.5)
+                          ),
+                          control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_immRetentionYoung)
+
+m2_immRetention <- glm(corr ~ social_cond*test_three*scaled_age,
+                          data = immRetentionTD,
+                          family = binomial,
+                          contrasts = list(
+                          group = c(-0.5, 0.5),
+                          test_three = c(-0.5, 0.5),
+                          word_type = c(-0.5, 0.5),
+                          social_cond = c(-0.5, 0.5)
+                          ))
+
+summary(m2_immRetention)
+
+immRetention %>%
+  group_by(group, test_three) %>%
+  dplyr::summarise(mean_acc = mean(corr, na.rm = T))
+```
+
+
+
+## Immediate Recall, Attainment, Retention Group Analysis (GLMER)
+```{r}
+three_helmert = matrix(c(2/3, -1/3, -1/3, 0, .5, -.5), ncol = 2)
+# three_helmert = matrix(c(-1/3, -1/3, 2/3, -0.5, 0.5, 0), ncol = 2)
+
+simple_allRe <- glmer(corr ~ group*social_cond + (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allRe,
+                    family = binomial,
+                    contrasts = list(
+                    group = c(-0.5, 0.5),
+                    social_cond = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_allRe)
+
+simple_allRe2 <- glmer(corr ~ group*social_cond*scaled_age + (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allRe,
+                    family = binomial,
+                    contrasts = list(
+                    group = c(-0.5, 0.5),
+                    social_cond = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_allRe2)
+
+simple_allRe3 <- glmer(corr ~ group*social_cond*scaled_age*test_three + 
+                          (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allRe[which(allRe$test_three == "attainment" | 
+                                           allRe$test_three == "retention"),],
+                    family = binomial,
+                    contrasts = list(
+                    group = c(-0.5, 0.5),
+                    social_cond = c(-0.5, 0.5),
+                    # test_three = three_helmert,
+                    test_three = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_allRe3)
+
+
+# Run within group analysis and across groups; get rid of age in group analysis as long as they are matched
+# is it more interesting to look at a certain time point
+# m1_allRe <- glmer(corr ~ group*social_cond*word_type*test_three*scaled_age + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+#                     data = allRe,
+#                     family = binomial,
+#                     contrasts = list(
+#                     test_three = three_helmert,
+#                     social_cond = c(-0.5, 0.5),
+#                     word_type = c(-0.5, 0.5),
+#                     group = c(-0.5, 0.5),
+#                     age_group = c(-0.5, 0.5)
+#                     ),
+#                     control = glmerControl(optimizer = "bobyqa"))
+# 
+# summary(m1_allRe)
+```
+
+## Immediate Recall, Attainment, Retention Analysis in TD
+```{r}
+simple_allReTD <- glmer(corr ~ social_cond + (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReTD,
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_allReTD)
+
+
+simple_allReTD2 <- glmer(corr ~ social_cond*scaled_age + 
+                          (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReTD,
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_allReTD2)
+
+three_helmert = matrix(c(2/3, -1/3, -1/3, 0, .5, -.5), ncol = 2)
+
+simple_allReTD3 <- glmer(corr ~ social_cond*scaled_age*test_three + 
+                          (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReTD[which(allReTD$test_three == "attainment" | 
+                                           allReTD$test_three == "retention"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    # test_three = three_helmert,
+                    test_three = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_allReTD3)
+
+m1_allReTD <- glmer(corr ~ social_cond*scaled_age*scaled_pvt + 
+                          (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReTD,
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    test_three = three_helmert
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_allReTD)
+
+m2_allReTD <- glmer(corr ~ social_cond*scaled_age*scaled_mite + 
+                          (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReTD,
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    test_three = three_helmert
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m2_allReTD)
+```
+
+
+
+```{r, include = F, eval = F}
+m1_allReOld <- glmer(corr ~ social_cond*test_three + (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReTD[which(allReTD$age_group == "older"),],
+                    family = binomial,
+                    contrasts = list(
+                    test_three = three_helmert,
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_allReOld)
+
+m1_allReYoung <- glmer(corr ~ social_cond*test_three*word_type + (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReTD[which(allReTD$age_group == "younger"),],
+                    family = binomial,
+                    contrasts = list(
+                    test_three = three_helmert,
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_allReYoung)
+
+m1_allReN <- glmer(corr ~ social_cond*test_three*age_group + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReTD[which(allReTD$word_type == "noun"),],
+                    family = binomial,
+                    contrasts = list(
+                    test_three = three_helmert,
+                    social_cond = c(-0.5, 0.5),
+                    age_group = c(-0.5, 0.5),
+                    group = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_allReN)
+
+
+m1_allReV <- glmer(corr ~ social_cond*test_three*age_group + (1+social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReTD[which(allReTD$word_type == "verb"),],
+                    family = binomial,
+                    contrasts = list(
+                    test_three = three_helmert,
+                    social_cond = c(-0.5, 0.5),
+                    age_group = c(-0.5, 0.5),
+                    group = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(m1_allReV)
+
+
+m2_allRe <- glm(corr ~ group*social_cond*test_three*age_year*word_type,
+                    data = allRe,
+                    family = binomial,
+                    contrasts = list(
+                    test_time = four_helmert,
+                    test_three = three_helmert,
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5),
+                    group = c(-0.5, 0.5)
+                    ))
+
+summary(m2_allRe)
+
+m2_allReN <- glm(corr ~ group*social_cond*test_three*age_year,
+                    data = allRe[which(allRe$word_type== "noun"),],
+                    family = binomial,
+                    contrasts = list(
+                    test_time = four_helmert,
+                    test_three = three_helmert,
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5),
+                    group = c(-0.5, 0.5)
+                    ))
+
+summary(m2_allReN)
+
+m2_allReV <- glm(corr ~ group*social_cond*test_three*age_year,
+                    data = allRe[which(allRe$word_type== "verb"),],
+                    family = binomial,
+                    contrasts = list(
+                    test_time = four_helmert,
+                    test_three = three_helmert,
+                    social_cond = c(-0.5, 0.5),
+                    word_type = c(-0.5, 0.5),
+                    group = c(-0.5, 0.5)
+                    ))
+
+summary(m2_allReV)
+
+cor.test(allRe$age_year, allRe$corr)
+```
+
+
+## Immediate Recall, Attainment, Retention Analysis in ASD
+```{r}
+simple_allReASD <- glmer(corr ~ social_cond + (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReASD,
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_allReASD)
+
+
+simple_allReASD2 <- glmer(corr ~ social_cond*scaled_age + 
+                          (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReASD,
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_allReASD2)
+
+simple_allReASD3 <- glmer(corr ~ social_cond*scaled_age*test_three + 
+                          (1 + social_cond|Participant.Public.ID) + (1+social_cond|story),
+                    data = allReASD[which(allReASD$test_three == "attainment" | 
+                                           allReASD$test_three == "retention"),],
+                    family = binomial,
+                    contrasts = list(
+                    social_cond = c(-0.5, 0.5),
+                    # test_three = three_helmert,
+                    test_three = c(-0.5, 0.5)
+                    ),
+                    control = glmerControl(optimizer = "bobyqa"))
+
+summary(simple_allReASD3)
+```
+
+
+## Plot Social * Age Interaction across all timepoints in TD (from multiple TD models)
+```{r}
+library(ggbeeswarm)
+
+allRe %>%
+  filter(group == "TD") %>%
+  filter(test_time == "retention") %>%
+  filter(!is.na(corr)) %>%
+  # group_by(Participant.Public.ID, group, age_year, age_month, age_group, word_type, social_cond) %>%
+  # dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing")) %>%
+  ggplot(aes(x = social_cond, y = corr)) +
+  geom_bar(
+    aes(fill = social_cond),
+    position = position_dodge(),
+    width = 0.9,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Accuracy Across All Time Points",
+       x = "Social Condition",  # Change x-axis label
+       y = "Accuracy (%)") +
+  geom_beeswarm(
+    aes(group = Participant.Public.ID),
+    dodge.width = 0.3,
+    cex = 1.5,
+    size = 3,
+    alpha = 0.5,
+    show.legend = FALSE,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  styling
+
+blockRe %>%
+  filter(group == "TD" & test_three == "attainment") %>%
+  group_by(group, test_three, age_group, word_type,social_cond) %>%
+  dplyr::summarise(mean_acc = mean(corr, na.rm = T))
+```
+
+
+# Across Time Individual Difference Analysis
+## Calculate mean accuracy by subject across time
+```{r}
+meanAllRet <-
+  allRe %>%
+  group_by(Participant.Public.ID, group, age_year, age_month, age_group, word_type, social_cond, pvt_raw_score,
+           pvt_std_score, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond)
+
+meanAccRetLog <- 
+  meanAllRet %>%
+  group_by(Participant.Public.ID, group, age_year, age_month, age_group, social_cond, pvt_raw_score,
+           pvt_std_score, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, social_cond) %>%
+  mutate(corr_log = log(corr))
+```
+
+```{r}
+# Invididuals missing PVT
+allRe %>%
+  filter(is.na(pvt_std_score)) %>%
+  dplyr::select(Participant.Public.ID, group) %>%
+  group_by(group) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = n())
+
+# Invididuals missing MITE
+allRe %>%
+  filter(test_three == "retention") %>%
+  filter(is.na(mite_total_score)) %>%
+  dplyr::select(Participant.Public.ID, group) %>%
+  group_by(group) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = n())
+```
+
+# Mediation Analyses
+```{r}
+library(mediation)
+# Cannot use Log scores due to accuracy = 0
+medSocial <-
+function(social, diagnostic_group, age, mediator, seed) {
+  set.seed(seed)
+  meanAccImmOH <-
+    meanAccRetLog %>%
+    filter(social_cond == social) %>%
+    filter(group == diagnostic_group)
+  
+  if(age != "all") {
+    meanAccImmOH <-
+      meanAccImmOH %>%
+      filter(age_group == age)
+  }
+  
+  meanAccImmOH[,c("scaled_mediator")] <- scale(meanAccImmOH[,c(mediator)])
+  meanAccImmOH[,c("scaled_age")] <- scale(meanAccImmOH$age_year)
+  
+  # model.M <- lm(M ~ X, myData)
+  # model.Y <- lm(Y ~ X + M, myData)
+  # results <- mediate(model.M, model.Y, treat='X', mediator='M',
+  #                    boot=TRUE, sims=100)
+  
+  # Using non-scale is the same
+  model.M <- lm(scaled_mediator ~ scaled_age, data = meanAccImmOH)
+  model.Y <- lm(corr ~ scaled_age + scaled_mediator, data = meanAccImmOH)
+  results <- mediate(model.M, model.Y, treat='scaled_age', mediator='scaled_mediator',
+                     boot=TRUE, sims=100)
+  resultsTemp <- summary(results)
+  
+  return(resultsTemp)
+}
+```
+
+```{r}
+# Accuracy and Age Relationship is not mediated by PVT
+medSocial("Overhearing", "TD", "all", "pvt_raw_score", 128)
+medSocial("Direct", "TD", "all", "pvt_raw_score", 129)
+medSocial("Overhearing", "ASD", "all", "pvt_raw_score", 170)
+medSocial("Direct", "ASD", "all", "pvt_raw_score", 171)
+
+# Accuracy and Age Relationship is not mediated by MITE
+medSocial("Overhearing", "TD", "all", "mite_total_score", 130)
+medSocial("Direct", "TD", "all", "mite_total_score", 131)
+medSocial("Overhearing", "ASD", "all", "mite_total_score", 150)
+medSocial("Direct", "ASD", "all", "mite_total_score", 151)
+
+```
+
+
+## Plot TD Social (* Age) * PVT Interaction Across Time
+**(Both main effect of PVT and Social * PVT * Age in models)**
+```{r}
+meanAllRet %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, pvt_std_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                pvt_std_score = as.numeric(as.character(pvt_std_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = pvt_std_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Accuracy Across Time",
+       x = "PVT Std Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+
+meanAllRet %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, pvt_std_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                pvt_std_score = as.numeric(as.character(pvt_std_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = pvt_std_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group + age_group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Accuracy Across Time",
+       x = "PVT Std Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+
+# N for this plot
+meanAllRet %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  filter(!is.na(pvt_std_score)) %>%
+  group_by(group, age_group, social_cond) %>%
+  distinct(.) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = length(unique(Participant.Public.ID))) %>%
+  arrange(group, social_cond) 
+```
+
+
+
+## Plot TD Social (* Age) * MITE Interaction Across Time
+**(Only main effect of MITE in models)**
+```{r}
+meanAllRet %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                mite_total_score = as.numeric(as.character(mite_total_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = mite_total_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Accuracy Across Time",
+       x = "Mite Total Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+
+meanAllRet %>%
+  filter(group == "TD") %>%
+  filter(!is.na(corr)) %>%
+  group_by(Participant.Public.ID, group, age_group, social_cond, mite_total_score) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T), n = n()) %>%
+  arrange(group, social_cond) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                mite_total_score = as.numeric(as.character(mite_total_score)),
+                corr = as.numeric(as.character(corr))) %>%
+  ggplot(aes(x = mite_total_score, y = corr)) +
+  geom_point(
+    aes(color = social_cond),
+    stat = "identity",
+    size = 3,
+    na.rm=TRUE,
+    position = position_dodge(width = 4),
+    show.legend = FALSE,
+    alpha = 0.5,
+    shape=1,
+    stroke = 2
+  ) +
+  facet_grid(~group + age_group,  labeller = (labeller(word_type = labsWord))) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Accuracy Across Time",
+       x = "Mite Total Score",  # Change x-axis label
+       y = "Accuracy (%)") +
+  styling
+```
+
+
+
+## Calculate date differences between immediate recall, attainment, retention for each subject
+https://stackoverflow.com/questions/56265669/compare-adjacent-rows-in-r
+```{r, include = F}
+
+```
+
+
+# Plot across time and social condition accuracy
+```{r, include = F}
+library(ggplot2)
+cbPalette <- c("#a6cee3", "#1f78b4", "#b2df8a", "#66c2a5", "#fc8d62", "#8da0cb", "#1b9e77", "#d95f02", "#7570b3")
+
+
+labsWord <- c("Noun", "Verb")
+names(labsWord) <- c("noun", "verb")
+
+plot_across_time <-
+  function(word_class1, word_class2, df) {
+  df %>%
+    filter(word_type == word_class1 | word_type == word_class2) %>%
+    # filter(group == group_name) %>%
+    filter(!is.na(corr)) %>%
+    filter(!is.na(test_three)) %>%
+    arrange(group) %>%    # First sort by val. This sort the dataframe but NOT the factor levels
+    mutate(group = factor(group, levels=c("TD", "ASD"))) %>%
+    # filter(age_year < 8.5) %>%
+    mutate(
+          # test_time = factor(test_time, levels=c("immediate", "attainment", "short_retention", "retention")),
+           test_three = factor(test_three, levels=c("immediate", "attainment", "retention"))) %>%
+    mutate(social_cond = dplyr::recode(social_cond, Direct = "Direct Address"),
+           # test_time = dplyr::recode(test_time, immediate = "0 min", attainment = "5 min", short_retention = "10 min", retention = "1 week"),
+           test_three = dplyr::recode(test_three, immediate = "0 min", attainment = "10 min", retention = "1 week")) %>%
+    group_by(group, social_cond, test_three) %>%
+    dplyr::summarise(mean = mean(corr, na.rm = TRUE),
+                    sd = sd(corr, na.rm = TRUE),
+                    n = n()) %>%
+    mutate(se = sd / sqrt(n),
+            lower_ci = mean - qt(1 - (0.05 / 2), n - 1) * se,
+            upper_ci = mean + qt(1 - (0.05 / 2), n - 1) * se) %>%
+    ggplot(aes(x = test_three, y = mean, group = social_cond,  fill = social_cond)) +
+    scale_fill_manual(values = c(cbPalette[1], cbPalette[8])) +
+    geom_bar(color = "black",
+              position = position_dodge(),
+              width = 0.7,
+              stat = "summary",
+              fun = "mean") +
+    geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                  width = .1,
+                  position = position_dodge(width = 0.7)) +
+    geom_line(aes(color = social_cond),
+              position = position_dodge(width=0.7),
+              size = 1,
+              stat = "summary",
+               fun = "mean") +
+    geom_point(color = "black",
+               position = position_dodge(width=0.7),
+               shape = 21,
+               size = 3,
+               stat = "summary",
+               fun = "mean") +
+    # scale_fill_manual(values=c("white", "grey")) +
+    #facet_grid(~word_type + test_time + group,  labeller = (labeller(word_type = labsWord))) +
+    facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+   # guides(fill = guide_legend(title="Social Condition")) +
+     labs(x = "Test Time After Word Learning",  # Change x-axis label
+          y = "Accuracy (%)") +
+      labs(title = paste("Accuracy in", word_class1, word_class2)) +
+      theme(
+      plot.title = element_text(size = 30, face = "bold"),
+      axis.title.x = element_text(size = 26, face = "bold"),
+      axis.title.y = element_text(size = 22, face = "bold"),
+      axis.text = element_text(size = 24, face = "bold"),
+      legend.text = element_text(size = 22, face = "bold"),
+      legend.title = element_text(size = 22, face = "bold"),
+      panel.background = element_rect(fill = "white"),
+      # Set plot background to whit
+      axis.line.x = element_line(colour = "black", size = 1),
+      # Add line to x axis
+      axis.line.y = element_line(colour = "black", size = 1),
+      # Add line to y axis
+      strip.text = element_text(size = 24, face = "bold"),
+      # Change facet text
+      strip.background = element_rect(fill = "white", size = 1),
+      # Change facet color
+      panel.spacing = unit(.05, "lines"),
+      # Add panel border
+      panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+      # Change panel border color and size
+      legend.background = element_rect(fill = "#ffffff00")
+      # strip.text = element_blank()
+    ) +
+     guides(fill = guide_legend(title = "Social Condition")) +
+    guides(color = "none") +
+    coord_cartesian(ylim = c(0.5, 0.91))
+  }
+  # guides(color = guide_legend(override.aes = list(fill = c("white", "gray"))))
+
+plot_retention <-
+  function(group_name, word_class1, word_class2, df) {
+  df %>%
+    filter(word_type == word_class1 | word_type == word_class2) %>%
+    # filter(group == group_name) %>%
+    filter(!is.na(corr)) %>%
+    # filter(!is.na(test_three)) %>%
+    filter(test_three != "immediate") %>%
+    arrange(group) %>%  # First sort by val. This sort the dataframe but NOT the factor levels
+    mutate(group = factor(group, levels=c("TD", "ASD"))) %>%
+    mutate(social_cond = dplyr::recode(social_cond, Direct = "Direct Address"),
+           test_three = dplyr::recode(test_three, immediate = "Immediate", attainment = "Short-Term Retention", retention = "Long-Term Retention")) %>%
+    group_by(group, social_cond, test_three) %>%
+    dplyr::summarise(mean = mean(corr, na.rm = TRUE),
+                    sd = sd(corr, na.rm = TRUE),
+                    n = n()) %>%
+    mutate(se = sd / sqrt(n),
+            lower_ci = mean - qt(1 - (0.05 / 2), n - 1) * se,
+            upper_ci = mean + qt(1 - (0.05 / 2), n - 1) * se) %>%
+    ggplot(aes(x = group, y = mean, group = social_cond,  fill = group)) +
+    geom_bar(color = "black",
+              position = position_dodge(),
+              width = 0.7,
+              stat = "summary",
+              fun = "mean") +
+    scale_fill_manual(values = c(cbPalette[1], cbPalette[8])) +
+    scale_color_manual(values = c("black")) +
+    geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                  width = .1,
+                  position = position_dodge(width = 0.7)) +
+    geom_line(aes(color = "black"),
+              position = position_dodge(width=0.7),
+              size = 0.8,
+              stat = "summary",
+               fun = "mean") +
+    geom_point(color = "black",
+               position = position_dodge(width=0.7),
+               shape = 21,
+               size = 3,
+               stat = "summary",
+               fun = "mean") +
+    facet_grid(~test_three,  labeller = (labeller(word_type = labsWord))) +
+    # scale_fill_manual(values=c("white", "grey")) +
+   # guides(fill = guide_legend(title="Social Condition")) +
+     labs(x = "Test Time",  # Change x-axis label
+          y = "Accuracy (%)") +
+      # labs(title = paste("Accuracy in", word_class1, word_class2)) +
+      theme(
+      plot.title = element_text(size = 30, face = "bold"),
+      axis.title.x = element_blank(),
+      axis.title.y = element_text(size = 22, face = "bold"),
+      axis.text = element_text(size = 24, face = "bold"),
+      legend.text = element_text(size = 22, face = "bold"),
+      legend.title = element_text(size = 22, face = "bold"),
+      panel.background = element_rect(fill = "white"),
+      # Set plot background to whit
+      axis.line.x = element_line(colour = "black", size = 1),
+      # Add line to x axis
+      axis.line.y = element_line(colour = "black", size = 1),
+      # Add line to y axis
+      strip.text = element_text(size = 26, face = "bold"),
+      # Change facet text
+      strip.background = element_rect(fill = "white", size = 1),
+      # Change facet color
+      panel.spacing = unit(.05, "lines"),
+      # Add panel border
+      panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+      # Change panel border color and size
+      legend.background = element_rect(fill = "#ffffff00")
+      # strip.text = element_blank()
+      # legend.position = c(.78, 0.85)
+    ) +
+     guides(fill = guide_legend(title = "Group")) +
+    guides(color = "none") +
+    coord_cartesian(ylim = c(0.57, 0.87)) +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 0.75, xend = 1.25, y = 0.8, yend = 0.8)) +
+    # geom_text(aes(x = 1, y = 0.805, label = paste0("*")), size = 11, color = "black") +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 1.75, xend = 2.25, y = 0.735, yend = 0.735)) +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 1, xend = 2, y = 0.83, yend = 0.83)) +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 1, xend = 1, y = 0.83, yend = 0.82)) +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 2, xend = 2, y = 0.83, yend = 0.76)) +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 1.5, xend = 1.5, y = 0.83, yend = 0.835)) +
+    geom_text(size = 5, color = "black", 
+              data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+              aes(x = 2, y = 0.75, label = paste0("†"))) +
+    geom_text(size = 7, color = "black", 
+              data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+              aes(x = 1.5, y = 0.855, label = paste0("†"))) 
+    # geom_text(aes(x = 1.5, y = 0.855, label = paste0("†")), size = 7, color = "black")
+  }
+
+plot_group <-
+  function(group_name, word_class1, word_class2, df) {
+  df %>%
+    filter(word_type == word_class1 | word_type == word_class2) %>%
+    # filter(group == group_name) %>%
+    filter(!is.na(corr)) %>%
+    # filter(!is.na(test_three)) %>%
+    filter(test_three != "immediate") %>%
+    arrange(group) %>%  # First sort by val. This sort the dataframe but NOT the factor levels
+    mutate(group = factor(group, levels=c("TD", "ASD"))) %>%
+    mutate(social_cond = dplyr::recode(social_cond, Direct = "Direct Address"),
+           test_three = dplyr::recode(test_three, immediate = "0 min", attainment = "Short-Term Retention", retention = "Long-Term Retention")) %>%
+    group_by(group, social_cond, test_three) %>%
+    dplyr::summarise(mean = mean(corr, na.rm = TRUE),
+                    sd = sd(corr, na.rm = TRUE),
+                    n = n()) %>%
+    mutate(se = sd / sqrt(n),
+            lower_ci = mean - qt(1 - (0.05 / 2), n - 1) * se,
+            upper_ci = mean + qt(1 - (0.05 / 2), n - 1) * se) %>%
+    ggplot(aes(x = test_three, y = mean, group = social_cond,  fill = group)) +
+    geom_bar(color = "black",
+              position = position_dodge(),
+              width = 0.7,
+              stat = "summary",
+              fun = "mean") +
+    scale_fill_manual(values = c(cbPalette[1], cbPalette[8])) +
+    scale_color_manual(values = c("black")) +
+    geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                  width = .1,
+                  position = position_dodge(width = 0.7)) +
+    geom_line(aes(color = "black"),
+              position = position_dodge(width=0.7),
+              size = 0.8,
+              stat = "summary",
+               fun = "mean") +
+    geom_point(color = "black",
+               position = position_dodge(width=0.7),
+               shape = 21,
+               size = 3,
+               stat = "summary",
+               fun = "mean") +
+    facet_grid(~group,  labeller = (labeller(word_type = labsWord))) +
+    # scale_fill_manual(values=c("white", "grey")) +
+   # guides(fill = guide_legend(title="Social Condition")) +
+     labs(x = "Test Time",  # Change x-axis label
+          y = "Accuracy (%)") +
+      # labs(title = paste("Accuracy in", word_class1, word_class2)) +
+      theme(
+      plot.title = element_text(size = 30, face = "bold"),
+      axis.title.x = element_text(size = 26, face = "bold"),
+      axis.title.y = element_text(size = 22, face = "bold"),
+      axis.text = element_text(size = 24, face = "bold"),
+      legend.text = element_text(size = 22, face = "bold"),
+      legend.title = element_text(size = 22, face = "bold"),
+      panel.background = element_rect(fill = "white"),
+      # Set plot background to whit
+      axis.line.x = element_line(colour = "black", size = 1),
+      # Add line to x axis
+      axis.line.y = element_line(colour = "black", size = 1),
+      # Add line to y axis
+      strip.text = element_text(size = 24, face = "bold"),
+      # Change facet text
+      strip.background = element_rect(fill = "white", size = 1),
+      # Change facet color
+      panel.spacing = unit(.05, "lines"),
+      # Add panel border
+      panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+      # Change panel border color and size
+      legend.background = element_rect(fill = "#ffffff00")
+      # strip.text = element_blank()
+      # legend.position = c(.78, 0.85)
+    ) +
+     guides(fill = guide_legend(title = "Group")) +
+    guides(color = "none") +
+    coord_cartesian(ylim = c(0.57, 0.87)) +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 0.75, xend = 1.25, y = 0.8, yend = 0.8)) +
+    # geom_text(aes(x = 1, y = 0.805, label = paste0("*")), size = 11, color = "black") +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 1.75, xend = 2.25, y = 0.735, yend = 0.735)) +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 1, xend = 2, y = 0.83, yend = 0.83)) +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 1, xend = 1, y = 0.83, yend = 0.82)) +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 2, xend = 2, y = 0.83, yend = 0.75)) +
+    geom_segment(data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+                 aes(x = 1.5, xend = 1.5, y = 0.83, yend = 0.835)) +
+    geom_text(size = 7, color = "black", 
+              data = data.frame(test_three = "Long-Term Retention", group = "ASD", social_cond = "Direct"),
+              aes(x = 1.5, y = 0.855, label = paste0("†"))) 
+    # geom_text(aes(x = 1.5, y = 0.855, label = paste0("†")), size = 7, color = "black")
+  }
+```
+
+
+# Calculate mean accuracy by subject (meanAcc)
+```{r}
+meanAcc <- 
+  allRe %>%
+  group_by(Participant.Public.ID, group, age_year, age_month, age_group, scaled_age, test_three, word_type, social_cond) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  arrange(group, word_type, social_cond, test_three)
+```
+
+
+```{r}
+plot_across_time("noun", "verb", meanAcc)
+ggsave(paste0(output_path, "meanAcc_all_across_age.png"), bg="transparent", width = 35, height = 15, units = "cm")
+plot_across_time("noun", "noun", meanAcc)
+ggsave(paste0(output_path, "meanAcc_noun.png"), bg="transparent", width = 35, height = 15, units = "cm")
+plot_across_time("verb", "verb", meanAcc)
+ggsave(paste0(output_path, "meanAcc_verb.png"), bg="transparent", width = 35, height = 15, units = "cm")
+
+plot_retention("TD", "noun", "verb", meanAcc)
+ggsave(paste0(output_path, "att_ret_across_group.png"), bg="transparent", width = 25, height = 15, units = "cm")
+
+plot_group("TD", "noun", "verb", meanAcc)
+ggsave(paste0(output_path, "att_retTD.png"), bg="transparent", width = 25, height = 15, units = "cm")
+# plot_group("TD", "noun", "noun", meanAcc)
+# plot_group("TD", "verb", "verb", meanAcc)
+# plot_group("ASD", "noun", "verb", meanAcc)
+# plot_group("ASD", "noun", "noun", meanAcc)
+# plot_group("ASD", "verb", "verb", meanAcc)
+```
+
+
+```{r}
+# should we compute based on inidividual participants or based on groups?
+allRe %>%
+  group_by(group, test_three, scaled_time, word_type, social_cond) %>%
+  dplyr::summarise(sum = sum(corr, na.rm = T), n = n()) %>%
+  arrange(group, word_type, social_cond, test_three)
+
+meanAcc %>%
+  group_by(group, test_three, word_type, social_cond) %>%
+  dplyr::summarise(sum = sum(corr, na.rm = T), n = n()) %>%
+  arrange(group, word_type, social_cond, test_three)
+
+
+plot_across_time("noun", "verb", allRe)
+ggsave(paste0(output_path, "allRe_acc.png"), bg="transparent", width = 35, height = 15, units = "cm")
+
+plot_across_time("noun", "noun", allRe)
+ggsave(paste0(output_path, "allRe_acc_noun.png"), bg="transparent", width = 35, height = 15, units = "cm")
+
+plot_across_time("verb", "verb", allRe)
+ggsave(paste0(output_path, "allRe_acc_verb.png"), bg="transparent", width = 35, height = 15, units = "cm")
+```
+
+
+```{r}
+library(ggpattern)
+
+plot_immediate <-
+  function(df) {
+  df %>%
+    # filter(word_type == word_class1 | word_type == word_class2) %>%
+    # filter(group == group_name) %>%
+    filter(!is.na(corr)) %>%
+    # filter(!is.na(test_three)) %>%
+    filter(test_three == "immediate") %>%
+    arrange(group) %>%  # First sort by val. This sort the dataframe but NOT the factor levels
+    mutate(group = factor(group, levels=c("TD", "ASD"))) %>%
+    mutate(social_cond = dplyr::recode(social_cond, Direct = "Direct Address"),
+           test_three = dplyr::recode(test_three, immediate = "Immediate Test", attainment = "Short-Term Retention", retention = "Long-Term Retention")) %>%
+    group_by(group, social_cond, test_three) %>%
+    dplyr::summarise(mean = mean(corr, na.rm = TRUE),
+                    sd = sd(corr, na.rm = TRUE),
+                    n = n()) %>%
+    mutate(se = sd / sqrt(n),
+            lower_ci = mean - qt(1 - (0.05 / 2), n - 1) * se,
+            upper_ci = mean + qt(1 - (0.05 / 2), n - 1) * se) %>%
+    ggplot(aes(x = group, y = mean, pattern = social_cond,  fill = group)) +
+    geom_col_pattern(aes(pattern = social_cond),
+                     stat = "summary",
+                     fun = "mean",
+                     width = 0.7,
+                     position = position_dodge(),
+                     pattern_density = 0.1,
+                     pattern_spacing = 0.025,
+                     pattern_key_scale_factor = 0.6,
+                     color = "#000000",
+                     pattern_colour = "black",
+                     pattern_fill = "black") +
+  scale_pattern_manual(values = c("stripe", "none")) +
+  # scale_pattern_spacing_discrete(range = c(0.025, 0.05)) + 
+    scale_fill_manual(values = c(cbPalette[1], cbPalette[8])) +
+    scale_color_manual(values = c("black")) +
+    geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                  width = .1,
+                  position = position_dodge(width = 0.7)) +
+    # geom_line(aes(color = "black"),
+    #           position = position_dodge(width=0.7),
+    #           size = 0.8,
+    #           stat = "summary",
+    #            fun = "mean") +
+    geom_point(color = "black",
+               position = position_dodge(width=0.7),
+               shape = 21,
+               size = 3,
+               stat = "summary",
+               fun = "mean") +
+    guides(color = guide_legend(override.aes = list(pattern = "none", "none")),,
+           fill = guide_legend(override.aes = list(pattern = "none", "none")),
+           pattern = guide_legend(title="Social Condition", color = "black", override.aes = list(fill = c("white", "white")))) +
+    facet_grid(~test_three,  labeller = (labeller(word_type = labsWord))) +
+    # scale_fill_manual(values=c("white", "grey")) +
+   # guides(fill = guide_legend(title="Social Condition")) +
+     labs(x = "Test Time",  # Change x-axis label
+          y = "Accuracy (%)") +
+      # labs(title = paste("Accuracy in", word_class1, word_class2)) +
+      theme(
+      plot.title = element_text(size = 30, face = "bold"),
+      axis.title.x = element_blank(),
+      axis.title.y = element_text(size = 22, face = "bold"),
+      axis.text = element_text(size = 24, face = "bold"),
+      legend.text = element_text(size = 22, face = "bold"),
+      legend.title = element_text(size = 22, face = "bold"),
+      panel.background = element_rect(fill = "white"),
+      # Set plot background to whit
+      axis.line.x = element_line(colour = "black", size = 1),
+      # Add line to x axis
+      axis.line.y = element_line(colour = "black", size = 1),
+      # Add line to y axis
+      strip.text = element_text(size = 28, face = "bold"),
+      # Change facet text
+      strip.background = element_rect(fill = "white", size = 1),
+      # Change facet color
+      panel.spacing = unit(.05, "lines"),
+      # Add panel border
+      panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+      # Change panel border color and size
+      legend.background = element_rect(fill = "#ffffff00")
+      # strip.text = element_blank()
+      # legend.position = c(.78, 0.85)
+    ) +
+     guides(fill = guide_legend(title = "Group")) +
+    guides(color = "none") +
+    coord_cartesian(ylim = c(0, 0.87))
+  }
+
+plot_immediate(meanAcc)
+ggsave(paste0(output_path, "imm_across_group.png"), bg="transparent", width = 20, height = 15, units = "cm")
+```
+
+
+
+```{r}
+allRe %>%
+  filter(!is.na(allRe$corr)) %>%
+  # filter(group == "TD") %>%
+  filter(test_time == "attainment") %>%
+  mutate(social_cond = dplyr::recode(social_cond, front = "Direct", side = "Overhearing")) %>%
+  ggplot(aes(x = age_year, y = corr, group = social_cond)) +
+  geom_point(aes(color = social_cond),
+             stat = "summary",
+             fun.y = "mean",
+             position = position_dodge(width = 0.2),
+             alpha = 0.7,
+             size = 3) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  facet_grid(~group + word_type + test_three,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Attainment and Retention vs. Age",
+       x = "Age (months)",  # Change x-axis label
+       y = "Accuracy (%)")
+
+```
+
+
+
+# Extract Individual Differences Assessment Data
+```{r}
+meanAcc <- merge(meanAcc, ipad, by.x = c("Participant.Public.ID"), by.y = c("part_id"), all.x = T)
+
+meanAcc <- 
+  meanAcc %>%
+  dplyr::select(Participant.Public.ID, corr, group, age_year, scaled_age, social_cond, test_three, word_type, pvt_raw_score, pvt_std_score, orr_raw_score, orr_std_score, scq_total, mite_total_score)
+
+meanAcc %>%
+  dplyr::select(Participant.Public.ID, group, pvt_raw_score, orr_raw_score) %>%
+  distinct(.) %>%
+  group_by(group) %>%
+  dplyr::summarise(across(c("pvt_raw_score", "orr_raw_score"), ~ sum(is.na(.x))))
+
+allRe %>%
+  group_by(group, test_time) %>%
+  dplyr::select(Participant.Public.ID, test_time) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = n())
+```
+
+
+```{r}
+# Use Mean Acc scores for every cell of the experimental design
+meanAcc$group <- factor(meanAcc$group, levels = c("ASD", "TD"))
+meanAcc <- meanAcc[order(meanAcc$group),]
+
+meanAcc$social_cond <- factor(meanAcc$social_cond, levels = c("Direct", "Overhearing"))
+meanAcc <- meanAcc[order(meanAcc$social_cond),]
+
+meanAcc$word_type <- factor(meanAcc$word_type, levels = c("noun", "verb"))
+meanAcc <- meanAcc[order(meanAcc$word_type),]
+
+meanAcc$test_three <- factor(meanAcc$test_three, levels = c("immediate", "attainment", "retention"))
+meanAcc <- meanAcc[order(meanAcc$test_three),]
+
+
+meanAccTD <- meanAcc[which(meanAcc$group == "TD"),]
+meanAccASD <- meanAcc[which(meanAcc$group == "ASD"),]
+
+meanAcc %>%
+  dplyr::select(group, Participant.Public.ID, pvt_raw_score) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = length(!is.na(pvt_raw_score)))
+```
+
+# Vocabulary Analysis
+```{r}
+vocab_m1 <- lm(corr ~ social_cond*pvt_raw_score*word_type*test_three + scaled_age, data = meanAccTD,
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5),
+                   test_three = three_helmert
+                   ))
+summary(vocab_m1)
+```
+
+
+```{r}
+meanAccImm <- meanAcc[which(meanAcc$test_three == "immediate"),]
+meanAccAtt <- meanAcc[which(meanAcc$test_three == "attainment"),]
+meanAccRe <- meanAcc[which(meanAcc$test_three == "retention"),]
+```
+
+
+```{r}
+vocabImm_m1 <- lm(corr ~ social_cond*pvt_std_score*word_type + scaled_age, data = meanAccImm[which(meanAccImm$group == "TD"),],
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5)
+                   ))
+summary(vocabImm_m1)
+
+vocabAtt_m1 <- lm(corr ~ social_cond*pvt_std_score*word_type*scaled_age, data = meanAccAtt[which(meanAccAtt$group == "ASD"),],
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5)
+                   ))
+summary(vocabAtt_m1)
+
+vocabRe_m1 <- lm(corr ~ social_cond*pvt_std_score*word_type + scaled_age, data = meanAccRe[which(meanAccRe$group == "TD"),],
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5)
+                   ))
+summary(vocabRe_m1)
+```
+
+# Reading Analysis
+```{r}
+orr_m1 <- lm(corr ~ social_cond*orr_raw_score*word_type*test_three + scaled_age, data = meanAccTD,
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5),
+                   test_three = three_helmert
+                   ))
+summary(orr_m1)
+
+
+orrImm_m1 <- lm(corr ~ social_cond*orr_raw_score*word_type + scaled_age, data = meanAccImm[which(meanAccImm$group == "TD"),],
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5)
+                   ))
+summary(orrImm_m1)
+
+orrAtt_m1 <- lm(corr ~ social_cond*orr_raw_score*word_type + scaled_age, data = meanAccAtt[which(meanAccAtt$group == "TD"),],
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5)
+                   ))
+summary(orrAtt_m1)
+
+orrRe_m1 <- lm(corr ~ social_cond*orr_raw_score*word_type + scaled_age, data = meanAccRe[which(meanAccRe$group == "TD"),],
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5)
+                   ))
+summary(orrRe_m1)
+```
+
+
+# SCQ Analysis
+```{r}
+scq_m1 <- lm(corr ~ social_cond*scq_total*word_type*test_three + scaled_age, data = meanAccTD,
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5),
+                   test_three = three_helmert
+                   ))
+summary(scq_m1)
+
+
+scqImm_m1 <- lm(corr ~ social_cond*scq_total*word_type + scaled_age, data = meanAccImm[which(meanAccImm$group == "TD"),],
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5)
+                   ))
+summary(scqImm_m1)
+
+scqAtt_m1 <- lm(corr ~ social_cond*scq_total*word_type + scaled_age, data = meanAccAtt[which(meanAccAtt$group == "TD"),],
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5)
+                   ))
+summary(scqAtt_m1)
+
+scqRe_m1 <- lm(corr ~ social_cond*scq_total*word_type + scaled_age, data = meanAccRe[which(meanAccRe$group == "TD"),],
+               contrasts = list(
+                   social_cond = c(-0.5, 0.5),
+                   word_type = c(-0.5, 0.5)
+                   ))
+summary(scqRe_m1)
+```
+
+
+```{r}
+library("RcmdrMisc")
+
+astCorr <- function(df, group, condition) {
+  rcorr.adjust(as.matrix(df[which(df$group == group & df$social_cond == condition), c(
+    "corr",
+    "age_year",
+    # "kbit_matrices_raw",
+    # "kbit_matrices_std",
+    "orr_raw_score",
+    "orr_std_score",
+    # "orr_national_percentile",
+    "pvt_raw_score",
+    "pvt_std_score",
+    "scq_total",
+    "mite_total_score"
+    # "pvt_national_percentile"
+  )]),
+  use = c("pairwise.complete.obs"))
+}
+
+astCorr(meanAccImm, "TD", "Overhearing")
+astCorr(meanAccImm, "TD", "Direct")
+```
+
+# Plot Vocab and Accuracy
+```{r}
+meanAcc %>%
+  filter(!is.na(corr)) %>%
+  filter(group == "TD") %>%
+  filter(test_three == "immediate") %>%
+  mutate(social_cond = dplyr::recode(social_cond, Direct = "Direct Address", Overhearing = "Overhear"),
+        test_three = dplyr::recode(test_three, immediate = "0 min", attainment = "10 min", retention = "1 week"),
+        pvt_std_score = as.numeric(as.character(pvt_std_score)),
+        mite_total_all = as.numeric(as.character(mite_total_score))) %>%
+  ggplot(aes(x = pvt_std_score, y = corr, group = social_cond)) +
+  geom_point(aes(color = social_cond),
+             # stat = "summary",
+             # fun = "mean",
+             position = position_dodge(width = 3),
+             alpha = 0.7,
+             size = 3) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  facet_grid(~ group + test_three,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Novel Word Recall Accuracy vs. PVT",
+       x = "PVT Standard Scores",  # Change x-axis label
+       y = "Accuracy (%)") +
+ # guides(fill = guide_legend(title="Social Condition")) +
+   theme(
+    plot.title = element_text(size = 30, face = "bold"),
+    axis.title.x = element_text(size = 26, face = "bold"),
+    axis.title.y = element_text(size = 22, face = "bold"),
+    axis.text.x = element_text(size = 15, face = "bold"),
+    axis.text.y = element_text(size = 24, face = "bold"),
+    legend.text = element_text(size = 22, face = "bold"),
+    legend.title = element_text(size = 22, face = "bold"),
+    panel.background = element_rect(fill = "white"),
+    # Set plot background to whit
+    axis.line.x = element_line(colour = "black", size = 1),
+    # Add line to x axis
+    axis.line.y = element_line(colour = "black", size = 1),
+    # Add line to y axis
+    strip.text = element_text(size = 24, face = "bold"),
+    # Change facet text
+    strip.background = element_rect(fill = "white", size = 1),
+    # Change facet color
+    panel.spacing = unit(.05, "lines"),
+    # Add panel border
+    panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+    # Change panel border color and size
+    legend.background = element_rect(fill = "#ffffff00")
+    # strip.text = element_blank()
+  ) +
+  guides(color = guide_legend(title = "Social Condition"))
+
+# ggsave(paste0(output_path, "allRe_pvt.png"), bg="transparent", width = 30, height = 15, units = "cm")
+
+meanAcc %>%
+  filter(!is.na(mite_total_score)) %>%
+  filter(!is.na(corr)) %>%
+  dplyr::select(Participant.Public.ID, group, social_cond, test_three, mite_total_score, corr) %>%
+  group_by(group, social_cond, test_three) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = length(unique(Participant.Public.ID)))
+
+ggsave("results/pvt_acc_td_imm.png", width = 20, height = 15, units="cm")
+```
+
+
+# Plot Mite and Accuracy
+```{r}
+meanAcc %>%
+  filter(!is.na(corr)) %>%
+  # filter(group == "ASD") %>%
+  filter(test_three == "attainment") %>%
+  # mutate(social_cond = dplyr::recode(social_cond, Direct = "Direct Address", Overhearing = "Overhear"),
+  #        test_three = dplyr::recode(test_three, immediate = "0 min", attainment = "10 min", retention = "1 week")) %>%
+  ggplot(aes(x = mite_total_score, y = corr, group = social_cond)) +
+  geom_point(aes(color = social_cond),
+             # stat = "summary",
+             # fun = "mean",
+             position = position_dodge(width = 3),
+             alpha = 0.7,
+             size = 3) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  facet_grid(~ test_three,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Novel Word Recall Accuracy vs. MITE",
+       x = "MITE Total Scores",  # Change x-axis label
+       y = "Accuracy (%)") +
+ # guides(fill = guide_legend(title="Social Condition")) +
+   theme(
+    plot.title = element_text(size = 30, face = "bold"),
+    axis.title.x = element_text(size = 26, face = "bold"),
+    axis.title.y = element_text(size = 22, face = "bold"),
+    axis.text.x = element_text(size = 15, face = "bold"),
+    axis.text.y = element_text(size = 24, face = "bold"),
+    legend.text = element_text(size = 22, face = "bold"),
+    legend.title = element_text(size = 22, face = "bold"),
+    panel.background = element_rect(fill = "white"),
+    # Set plot background to whit
+    axis.line.x = element_line(colour = "black", size = 1),
+    # Add line to x axis
+    axis.line.y = element_line(colour = "black", size = 1),
+    # Add line to y axis
+    strip.text = element_text(size = 24, face = "bold"),
+    # Change facet text
+    strip.background = element_rect(fill = "white", size = 1),
+    # Change facet color
+    panel.spacing = unit(.05, "lines"),
+    # Add panel border
+    panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+    # Change panel border color and size
+    legend.background = element_rect(fill = "#ffffff00")
+    # strip.text = element_blank()
+  ) +
+  guides(color = guide_legend(title = "Social Condition"))
+
+ggsave("results/mite_acc_att.png", width = 30, height = 15, units = "cm")
+```
+
+
+# Plot Reading and Accuracy
+```{r}
+meanAcc %>%
+  filter(!is.na(corr)) %>%
+  filter(group == "TD") %>%
+  mutate(social_cond = dplyr::recode(social_cond, Direct = "Direct Address"),
+         test_three = dplyr::recode(test_three, immediate = "0 min", attainment = "5 min", retention = "1 week")) %>%
+  ggplot(aes(x = orr_raw_score, y = corr, group = social_cond)) +
+  geom_point(aes(color = social_cond),
+             stat = "summary",
+             fun = "mean",
+             position = position_dodge(width = 3),
+             alpha = 0.7,
+             size = 3) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  facet_grid(~word_type + test_three,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Novel Word Recall Accuracy vs. Decoding",
+       x = "Oral Reading Raw Scores",  # Change x-axis label
+       y = "Accuracy (%)") +
+ # guides(fill = guide_legend(title="Social Condition")) +
+   theme(
+    plot.title = element_text(size = 30, face = "bold"),
+    axis.title.x = element_text(size = 26, face = "bold"),
+    axis.title.y = element_text(size = 22, face = "bold"),
+    axis.text.x = element_text(size = 15, face = "bold"),
+    axis.text.y = element_text(size = 24, face = "bold"),
+    legend.text = element_text(size = 22, face = "bold"),
+    legend.title = element_text(size = 22, face = "bold"),
+    panel.background = element_rect(fill = "white"),
+    # Set plot background to whit
+    axis.line.x = element_line(colour = "black", size = 1),
+    # Add line to x axis
+    axis.line.y = element_line(colour = "black", size = 1),
+    # Add line to y axis
+    strip.text = element_text(size = 24, face = "bold"),
+    # Change facet text
+    strip.background = element_rect(fill = "white", size = 1),
+    # Change facet color
+    panel.spacing = unit(.05, "lines"),
+    # Add panel border
+    panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+    # Change panel border color and size
+    legend.background = element_rect(fill = "#ffffff00")
+    # strip.text = element_blank()
+  ) +
+  guides(color = guide_legend(title = "Social Condition"))
+
+# ggsave(paste0(output_path, "allRe_orr.png"), bg="transparent", width = 30, height = 15, units = "cm")
+```
+
+
+
+# Plot SCQ and Accuracy
+```{r}
+meanAcc %>%
+  filter(!is.na(corr)) %>%
+  filter(group == "TD") %>%
+  mutate(social_cond = dplyr::recode(social_cond, Direct = "Direct Address"),
+         test_three = dplyr::recode(test_three, immediate = "0 min", attainment = "5 min", retention = "1 week")) %>%
+  ggplot(aes(x = scq_total, y = corr, group = social_cond)) +
+  geom_point(aes(color = social_cond),
+             stat = "summary",
+             fun = "mean",
+             position = position_dodge(width = 3),
+             alpha = 0.7,
+             size = 3) +
+  geom_smooth(method='lm', formula= y~x, aes(color = social_cond), se = F) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  facet_grid(~word_type + test_three,  labeller = (labeller(word_type = labsWord))) +
+  guides(fill = guide_legend(title = "Social Condition")) +
+  labs(title = "Novel Word Recall Accuracy vs. Decoding",
+       x = "Oral Reading Raw Scores",  # Change x-axis label
+       y = "Accuracy (%)") +
+ # guides(fill = guide_legend(title="Social Condition")) +
+   theme(
+    plot.title = element_text(size = 30, face = "bold"),
+    axis.title.x = element_text(size = 26, face = "bold"),
+    axis.title.y = element_text(size = 22, face = "bold"),
+    axis.text.x = element_text(size = 15, face = "bold"),
+    axis.text.y = element_text(size = 24, face = "bold"),
+    legend.text = element_text(size = 22, face = "bold"),
+    legend.title = element_text(size = 22, face = "bold"),
+    panel.background = element_rect(fill = "white"),
+    # Set plot background to whit
+    axis.line.x = element_line(colour = "black", size = 1),
+    # Add line to x axis
+    axis.line.y = element_line(colour = "black", size = 1),
+    # Add line to y axis
+    strip.text = element_text(size = 24, face = "bold"),
+    # Change facet text
+    strip.background = element_rect(fill = "white", size = 1),
+    # Change facet color
+    panel.spacing = unit(.05, "lines"),
+    # Add panel border
+    panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+    # Change panel border color and size
+    legend.background = element_rect(fill = "#ffffff00")
+    # strip.text = element_blank()
+  ) +
+  guides(color = guide_legend(title = "Social Condition"))
+
+# ggsave(paste0(output_path, "allRe_orr.png"), bg="transparent", width = 30, height = 15, units = "cm")
+```
+
+
+
+
+
