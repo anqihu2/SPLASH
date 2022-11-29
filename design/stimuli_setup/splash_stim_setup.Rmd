@@ -1,0 +1,160 @@
+---
+title: "splash_stim_setup.rmd"
+author: "Jojo Hu"
+date: "3/4/2021"
+output: html_document
+---
+
+
+```{r}
+soundPath <- "/Users/jojohu/Documents/Splash/video_stimuli/instruction/sound_stim/repeated_target_trial"
+videoPath <- "/Users/jojohu/Documents/Splash/video_stimuli/noun"
+videoPathV <- "/Users/jojohu/Documents/Splash/video_stimuli/verb"
+videoIntroPath <- "/Users/jojohu/Documents/Splash/video_stimuli/intro/intro_front"
+videoIntroPathV <- "/Users/jojohu/Documents/Splash/video_stimuli/intro/verb_intro"
+
+novelWord <- read.csv("/Users/jojohu/Documents/Splash/design/novel_word_list_noun_verb.csv", stringsAsFactors = F)
+
+soundF <-
+  list.files(path = soundPath,
+             pattern = "wav", full.names = F)
+
+wordList <- paste(novelWord$novel_word, collapse ="|")
+
+library(stringr)
+soundF <- soundF[which(str_detect(soundF, wordList) & !str_detect(soundF, "where|the|look_here"))]
+
+soundF <- data.frame(soundF)
+
+colnames(soundF) <- "sound_file"
+
+soundF$word_sound <- str_extract(soundF$sound_file, "(?<=find_)\\S+(?=_see|_like)")
+
+soundF$word_sound <- str_remove(soundF$word_sound, "ing")
+
+novelWord <- 
+  merge(novelWord, soundF, by.x = c("novel_word"), by.y = c("word_sound"), all.x = T)
+
+
+addSuffix <- function(nounverb, suffix) {
+  novelWord[which(novelWord$word_type == nounverb), which(str_detect(colnames(novelWord), "dist|pdist|key"))] <-
+    lapply(novelWord[which(novelWord$word_type == nounverb),
+                     which(str_detect(colnames(novelWord), "dist|pdist|key"))], 
+           function(x) {
+            is.character(x)
+            paste0(x, suffix)
+             })
+  return(novelWord)
+}
+
+novelWord <- addSuffix("noun", ".jpg")
+
+novelWord <- addSuffix("verb", ".mp4")
+
+
+
+
+intro_file <-
+  list.files(path = videoIntroPath,
+             pattern = "listener.mp4|listener_right.mp4", full.names = F)
+
+intro_fileV <-
+  list.files(path = videoIntroPathV,
+             pattern = "listener.mp4|listener_right.mp4", full.names = F)
+
+intro_file <- append(intro_file, intro_fileV)
+
+introF <- data.frame(intro_file)
+introF$story <- str_extract(introF$intro_file, "\\S+(?=_intro)")
+introF$story <- str_remove(introF$story, "_v1")
+
+novelWord <- merge(novelWord, introF, by.x = c("story"), by.y = c("story"), all.x = T)
+```
+
+
+```{r}
+video_file <-
+  list.files(path = videoPath,
+             pattern = "listener.mp4|listener_right.mp4", full.names = F)
+
+video_fileV <-
+  list.files(path = videoPathV,
+             pattern = "listener.mp4|listener_right.mp4", full.names = F)
+
+
+video_file <- append(video_file, video_fileV)
+
+videoF <- data.frame(video_file)
+
+getFaceSide <- function(df, column) {
+  df[,c("story")] <- str_extract(df[,c(column)], "\\S+(?=_front|_side)")
+  df[,c("story")] <- str_remove(df[,c("story")], "_v1")
+  df[,c("speaker_face")] <- str_extract(df[,c(column)], "front|side")
+  df[,c("speaker_side")] <- str_extract(df[,c(column)], "right")
+  df[which(is.na(df[,c("speaker_side")])),"speaker_side"] <- "left"
+  
+  return(df)
+}
+
+videoF <- getFaceSide(videoF, "video_file")
+novelWord <- getFaceSide(novelWord, "intro_file")
+novelWord$story <- str_remove(novelWord$story, "_intro")
+
+ 
+novelWord <- merge(novelWord, videoF, by.x = c("story", "speaker_face", "speaker_side"), 
+                   by.y = c("story", "speaker_face", "speaker_side"), all.x = T)
+
+bigListA_side <- novelWord[which(novelWord$story %in% c("alex","billy", "cathy", "david", "john",
+                                                        "circus", "grandpa", "henry", "jack", "leo") &
+                              novelWord$speaker_face == "side"),] 
+
+bigListA_front <- novelWord[which(novelWord$story %in% c("kyla","mark", "shirley", "winter", "zoey",
+                                                         "luke", "mike", "nina", "olivia", "robbie") &
+                              novelWord$speaker_face == "front"),] 
+
+bigListA <- rbind(bigListA_front, bigListA_side)
+
+bigListA$social_condition <- ifelse(bigListA$speaker_face == "front", "direct", "indirect")
+bigListA$sound_file <- gsub(".wav", ".mp3", bigListA$sound_file)
+
+bigListB_front <- novelWord[which(novelWord$story %in% c("alex","billy", "cathy", "david", "john",
+                                                        "circus", "grandpa", "henry", "jack", "leo") &
+                              novelWord$speaker_face == "front"),] 
+
+bigListB_side <- novelWord[which(novelWord$story %in% c("kyla","mark", "shirley", "winter", "zoey",
+                                                         "luke", "mike", "nina", "olivia", "robbie") &
+                              novelWord$speaker_face == "side"),] 
+
+bigListB <- rbind(bigListB_front, bigListB_side)
+
+bigListB$social_condition <- ifelse(bigListB$speaker_face == "front", "direct", "indirect")
+bigListB$sound_file <- gsub(".wav", ".mp3", bigListB$sound_file)
+
+# write.csv(bigListA, "/Users/jojohu/Documents/Splash/design/bigListA.csv")
+```
+
+
+# Copy images (only need to use once)
+```{r}
+imagePath <- "/Users/jojohu/Documents/Splash/image_stimuli/noun_image/renamed_300px/"
+
+image_file <-
+  list.files(path = imagePath,
+             pattern = ".jpg", full.names = F)
+
+imageUsed <- 
+  novelWord[, c("story",colnames(novelWord)[str_detect(colnames(novelWord), "target|dist|pdist")])]
+
+
+imageUsed <- unique(melt(imageUsed, id.vars = c("story"))$value)
+
+image_found <- image_file[which(image_file %in% imageUsed)]
+
+image_file <- paste0(imagePath, image_found)
+
+# Some images come from the color folder; some from multipic:
+# file.copy(from = image_file, 
+#           to = "/Users/jojohu/Documents/Splash/image_stimuli/image_stim/")
+
+```
+
