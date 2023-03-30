@@ -1,0 +1,1002 @@
+---
+title: "splash_gaze_analysis"
+author: "Jojo Hu"
+date: "1/5/2023"
+output: html_document
+---
+
+# SPLASH CHILD MANUAL CODING ANALYSIS
+
+# Get Frame Rate
+```{python, eval = F}
+python3 /Users/jojohu/Documents/Splash/beh_analysis/eye_quality/get_frame_rate.py /Volumes/data/projects/smile/recordings/eye_recordings/splash/
+```
+
+## Read in coding results
+```{r}
+library(stringr)
+library(dplyr)
+
+manualCode <-
+  list.files(path = "/Volumes/data/projects/smile/recordings/eye_recordings/splash/results",
+             pattern = "\\S+.csv$", full.names = T, recursive = T)
+
+
+manualCode <- manualCode[str_detect(manualCode, "[:digit:]+.csv")]
+
+readEye <- function(file) {
+  
+  time_file <- file.info(file)$ctime
+  
+  temp <- read.csv(file, stringsAsFactors = F)
+  
+  temp$File <- as.character(temp$File)
+
+  if (nrow(temp) > 0) {
+    temp[,c("create_time")] <- time_file
+  }
+    
+  temp <- 
+    temp %>%
+    mutate_if(is.logical, as.character)
+  
+  temp <- 
+    temp %>%
+    mutate_if(is.numeric, as.character)
+  
+  return(temp)
+}
+
+codeDF <- lapply(manualCode, readEye)
+
+codeDF <- do.call(bind_rows, codeDF)
+
+codeDF <-
+  codeDF %>%
+  filter(str_detect(KeyPress, "l|r|c|a|b|h|m|x")) %>%
+  dplyr::mutate(Frame = as.numeric(as.character(Frame))) %>%
+  arrange(File, Frame, Coder, create_time)
+
+allCodeDF <- codeDF
+```
+
+
+## Remove duplicated frames
+```{r}
+codeDF <- codeDF[-which(duplicated(codeDF[,c("File", "Frame")])),]
+```
+
+
+## Filter out frames that are not relevant to stimuli
+```{r}
+codeDF <- 
+  codeDF %>%
+  distinct(.) %>%
+  dplyr::select(-one_of("FrameRate")) %>%
+  dplyr::mutate(Frame = as.numeric(as.character(Frame))) %>%
+  arrange(File, Frame) 
+
+unique(codeDF$LookCode)
+
+codeDF$part_id <- str_extract(codeDF$File, "smile_\\S{1}_\\S{3}")
+
+codeDF <-
+  codeDF %>%
+    dplyr::mutate(block = str_extract(File, "(?<=block_).*(?=_)"),
+           block_zoom = str_extract(File, "(?<=block)[:digit:]"),
+           trial = str_extract(File, "(?<=_[:digit:]_)\\S+$"),
+           trial_zoom = str_extract(File, "(?<=block[[:digit:]]_)[:alpha:]*"),
+           trial_number = str_extract(File, "\\S+(?=.smile)"),
+           trial_number_zoom = str_extract(File, "[:digit:]$")) %>%
+    dplyr::mutate(trial_zoom = dplyr::recode(trial_zoom, star = "blockIntro"),
+           File = basename(File))
+```
+
+
+```{r}
+time_stamp <- read.csv("/Volumes/data/projects/smile/recordings/eye_recordings/splash/results/time_stamp.csv")  
+
+codeDF <- merge(codeDF, time_stamp, by.x = "File", by.y = "File", all.x = T)
+
+org_codeDF <- codeDF
+
+# codeDF <- org_codeDF
+```
+
+
+```{r}
+library(dplyr)
+
+max_frame <-
+  codeDF %>%
+  arrange(File, Frame) %>% 
+  group_by(File) %>%
+  top_n(1, Frame) %>%
+  dplyr::select(File, Frame) %>%
+  dplyr::rename("max_frame" = "Frame") %>%
+  distinct(.)
+
+min_frame <-
+  codeDF %>%
+  arrange(File, Frame) %>% 
+  group_by(File) %>%
+  top_n(-1, Frame) %>%
+  dplyr::select(File, Frame) %>%
+  dplyr::rename("min_frame" = "Frame") %>%
+  distinct(.)
+
+codeDF <- merge(codeDF, max_frame, all.x = T)
+
+codeDF <- 
+  codeDF %>%
+  group_by(File) %>%
+  filter(max_frame < 4800) %>%
+  filter(max_frame > 10)
+```
+
+
+```{r}
+# To Do: To make sure things are absolutely correct, manually mark actual start and end frames
+# Filter only the frames with stimuli display
+codeDF_timed <-
+  codeDF %>%
+  arrange(File, Frame) %>%
+  group_by(File) %>%
+  filter(!is.na(start_frame)) %>%
+  filter(!is.na(end_frame)) %>%
+  filter(Frame > start_frame & Frame < end_frame) %>%
+  dplyr::select(-one_of("max_frame"))
+
+# Filter out videos that are too big or too small
+codeDF_untimed <-
+  codeDF %>%
+  filter(is.na(start_frame) | is.na(end_frame)) %>%
+  filter(is.na(trial_zoom)) %>%
+  arrange(File, Frame) %>%
+  group_by(File) %>%
+  filter(max_frame < 4000) %>%
+  filter(max_frame > 10) %>%
+  dplyr::select(-one_of("max_frame"))
+
+# For those videos that do not have time stamps, just give a rough start frame
+mean_min <-
+  codeDF_timed %>%
+  arrange(File, Frame) %>% 
+  group_by(File) %>%
+  top_n(-1, Frame) %>%
+  dplyr::select(File, Frame) %>%
+  ungroup() %>%
+  dplyr::summarise(mean_min = mean(Frame))
+
+# Filter out the start frames
+codeDF_untimed <-
+  codeDF_untimed %>%
+  dplyr::mutate(start_frame = mean_min$mean_min) %>%
+  filter(Frame > start_frame)
+
+zoomQD <-
+  codeDF %>%
+  filter(!is.na(trial_zoom)) %>%
+  arrange(File, Frame) %>%
+  group_by(File) %>%
+  filter(max_frame < 4000) %>%
+  filter(max_frame > 10) %>%
+  dplyr::select(-one_of("max_frame"))
+
+codeDF <-
+  rbind(as.data.frame(zoomQD), as.data.frame(codeDF_untimed), as.data.frame(codeDF_timed)) %>%
+  arrange(part_id, File, Frame) %>%
+  distinct(.)
+```
+
+## TO DO: Check number of frames per video and see if coding is complete for the given video
+
+
+# Removed videos due to unusual frame rate, maximal frame number <  end frame suggested by Gorilla (To DO: manually check what happened in these videos, and correct start frame and end frame in time_stamp.csv)
+```{r}
+# List removed trials and reasonings
+org_codeDF %>%
+  filter(File %in% c(setdiff(unique(org_codeDF$File), unique(codeDF$File)))) %>%
+  group_by(part_id, File) %>%
+  dplyr::mutate(max_frame = max(Frame)) %>%
+  dplyr::select(part_id, File, frame_rate, max_frame, start_frame, end_frame) %>%
+  distinct(.) %>%
+  arrange(part_id, File)
+```
+
+
+```{r}
+actual_start <-
+  codeDF %>%
+  arrange(File, Frame) %>%
+  group_by(File) %>%
+  filter(row_number()==1) %>%
+  dplyr::select(File, Frame) %>%
+  dplyr::rename(File= File, actual_start = Frame)
+
+actual_end <-
+  codeDF %>%
+  arrange(File, Frame) %>%
+  group_by(File) %>%
+  filter(row_number()==n()) %>%
+  dplyr::select(File, Frame) %>%
+  dplyr::rename(File= File, actual_end = Frame)
+```
+
+
+# Print the duplicated or missing frame
+```{r}
+codeDF <- merge(codeDF, actual_start, by.x = "File", by.y = "File", all.x = T)
+codeDF <- merge(codeDF, actual_end, by.x = "File", by.y = "File", all.x = T)
+
+
+codeDF <- 
+  codeDF %>%
+  arrange(part_id, File, Frame)
+
+# Check whether frame numbers match with duration; printed output are videos with extra frame numbers coded
+codeDF$consecutive <- append(NA, diff(codeDF$Frame))
+
+unique(codeDF$consecutive)
+
+codeDF %>%
+  filter(consecutive > 1 | consecutive == 0)
+
+skipped <-
+  codeDF %>%
+  group_by(File) %>%
+  arrange(File, Frame) %>%
+  filter(consecutive > 1) %>%
+  dplyr::mutate(duration = actual_end - actual_start + 1,
+         diff_start = actual_start - start_frame, 
+         diff_end = end_frame - actual_end)
+
+# Print the duplicated or missing frame
+codeAgain <-
+  codeDF %>%
+  group_by(File) %>%
+  dplyr::mutate(duration = actual_end - actual_start + 1,
+         diff_start = actual_start - start_frame, 
+         diff_end = end_frame - actual_end) %>%
+  filter(consecutive > -5 & consecutive != 1) %>%
+  filter(File %in% skipped$File) %>%
+  dplyr::select("part_id", "File", "Frame", "consecutive") %>%
+  dplyr::mutate(code_from_frame = Frame - consecutive,
+         code_to_frame = Frame - 1) %>%
+  dplyr::select(-one_of("Frame", "consecutive")) %>%
+  arrange(part_id, File)
+
+head(codeAgain)
+
+# write.csv(codeAgain, "/Volumes/data/projects/smile/recordings/eye_recordings/splash/results/skipped_frame.csv")
+```
+
+
+# Descriptive Stat Summary
+```{r}
+library(dplyr)
+
+codeDF %>%
+  dplyr::mutate(part_id = as.factor(part_id)) %>%
+  dplyr::count(part_id) %>%
+  dplyr::rename(sum = n) %>%
+  head()
+
+# Video duration
+codeDF %>%
+  dplyr::mutate(duration = (actual_end - actual_start)/frame_rate) %>%
+  group_by(File) %>%
+  arrange(File, Frame) %>%
+  dplyr::select(File, duration) %>%
+  distinct(.) %>%
+  head()
+
+unique(codeDF$part_id)
+
+# write.csv(fbf_id, "/Users/jojohu/Downloads/fbf_id.csv", row.names = F)
+```
+
+
+
+# Merge Zoom Data with the Social Conditions of the trials
+```{r}
+condition <- 
+  read.csv("/Users/jojohu/Documents/Splash/beh_analysis/results/immRe_data.csv", stringsAsFactors = F)
+
+zoomCoded <- 
+  codeDF %>%
+  filter(!is.na(trial_zoom))
+
+unique(zoomCoded$part_id)
+
+zoomBeh <-
+  condition %>%
+  filter(Participant.Public.ID %in% zoomCoded$part_id) %>%
+  arrange(Participant.Public.ID, Spreadsheet.Row) %>%
+  dplyr::select(Participant.Public.ID, Spreadsheet.Row, block, social_cond, word_type, story, video_file) %>%
+  group_by(Participant.Public.ID, block) %>%
+  dplyr::mutate(trial_number_zoom = row_number(),
+                trial_zoom = paste0("story"),
+                part_id = `Participant.Public.ID`)
+
+zoomIntro <- zoomBeh
+zoomIntro$trial_zoom <- "storyintro"
+zoomBeh <- rbind(as.data.frame(zoomIntro), as.data.frame(zoomBeh))
+
+zoomCoded <-
+  merge(zoomCoded, zoomBeh, by.x = c("part_id", "block_zoom", "trial_zoom", "trial_number_zoom"),
+      by.y = c("part_id", "block", "trial_zoom", "trial_number_zoom"), all.x = T)
+```
+
+
+# Merge all non-zoom trials with the Social Conditions of the trials
+```{r}
+# Read in a file that has identifier of each recording
+trialName <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/results/story_timestamp.csv", stringsAsFactors = F)
+
+trialName$part_id <- str_extract(basename(trialName$new_name), "smile_\\S{1}_\\S{3}")
+trialName$trial_number <- str_extract(basename(trialName$new_name), "\\S+(?=.smile)")
+
+trialName <-
+  trialName %>%
+  filter(part_id %in% codeDF$part_id) %>%
+  distinct(.)
+
+gorillaCoded <-
+  codeDF %>%
+  filter(!part_id %in% zoomCoded$part_id)
+
+# Merge the identifier of each recording with the quality codings
+gorillaCoded <- merge(gorillaCoded, trialName, all.x = T)
+
+# Now use participant identifier to match behavioral conditions to eye tracking videos 
+# Read in a data.frame that contains the behavioral social conditions and the video identifiersfifty_filter
+videoCond <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/results/video_condition.csv")
+```
+
+
+```{r}
+gorillaCoded <- 
+ merge(gorillaCoded, unique(videoCond[,c("identifier", "Zone.Name", "video_file", "intro_file", "intro_file2", "word_type", "novel_word", "story", "Task.Name", "Spreadsheet.Name")]), by = c("identifier"), all.x = T)
+
+gorillaCoded<-
+  gorillaCoded %>%
+  filter(`Zone.Name` != "Zone1") %>%
+  dplyr::mutate(social_cond = str_extract(video_file, "(front|side)"),
+         trial_type = str_remove(Zone.Name, "file")) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing")) %>%
+  arrange(part_id, as.numeric(trial_number), Frame)
+
+nrow(unique(gorillaCoded[,c("identifier", "Frame")])) == nrow(gorillaCoded)
+   
+unique(gorillaCoded$trial_type)
+
+zoomCoded <-
+  zoomCoded %>%
+  dplyr::mutate(block = block_zoom,
+         trial = trial_zoom, 
+         trial_number = trial_number_zoom) %>%
+  dplyr::select(-one_of("block_zoom", "trial_zoom", "trial_number_zoom"))
+
+
+gorillaCoded_trim <- 
+  gorillaCoded %>%
+  dplyr::select(-one_of("block_zoom", "trial_zoom", "trial_number_zoom", "identifier", "Participant.Private.ID", "file_name", "webm", "video_num", "video_subnum",
+                        "new_name", "new_path", "copied_path", "STARTED.RECORDING", "STOPPED.RECORDING", "VIDEO.ENDED.EVENT.FIRED", "VIDEO.STARTED", "end_delay", 
+                        "recording_duration", "Screen.Number", "Zone.Name", "intro_file", "intro_file2", "Task.Name"))
+
+setdiff(colnames(gorillaCoded_trim), colnames(zoomCoded))
+
+zoomCoded[which(zoomCoded$trial == "story" & zoomCoded$word_type == "noun"), "trial"] <- "videoNoun"  
+zoomCoded[which(zoomCoded$trial == "story" & zoomCoded$word_type == "verb"), "trial"] <- "videoVerb" 
+
+zoomCoded[which(zoomCoded$trial == "storyintro" & zoomCoded$word_type == "noun"),"trial"] <- "introNoun"
+zoomCoded[which(zoomCoded$trial == "storyintro" & zoomCoded$word_type == "verb"),"trial"] <- "introVerb"
+ 
+unique(zoomCoded$trial)
+
+zoomCoded <-
+  zoomCoded %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "front" = "Direct", "side" = "Overhearing"),
+                trial_type = trial) %>%
+  arrange(part_id, File, Frame)
+```
+
+
+# Missing Frames that need to be coded in Zoom coding
+```{r}
+zoomCoded %>%
+  filter(consecutive != 1) %>%
+  filter(consecutive > -1)
+
+# Change proportion > 0.5 to proportion > 0 and remove "good" filtering to save the videoCond data below (TO DO: save the above as a function):
+# write.csv(videoCond, "/Users/jojohu/Documents/Splash/beh_analysis/results/eye_quality/video_cond.csv", row.names = F)
+```
+
+
+# Combine Zoom and Gorilla Data
+```{r}
+allCoded <-
+  dplyr::bind_rows(gorillaCoded_trim, zoomCoded) %>%
+  filter(str_detect(trial_type, "(videoNoun|videoVerb|introVerb|introNoun)")) %>%
+  arrange(part_id, File, Frame) 
+
+coded_part <- unique(allCoded$part_id)
+
+write.csv(coded_part, "/Users/jojohu/Documents/Splash/beh_analysis/results/eye_quality/coded_part.csv", row.names = F)
+```
+
+
+# Extract Speaker Side Info
+```{r}
+allCoded <- 
+  allCoded %>%
+  dplyr::mutate(listener_side = str_extract(video_file, "right"))
+
+# Story names with "right" at the end have speakers on the left
+allCoded[which(allCoded$listener_side == "right"), "speaker_side"] <- "left"
+# Story names with listener or listener} at the end have speakers on the right
+allCoded[which(str_detect(allCoded$video_file, "listener\\S{0,1}$")), "speaker_side"] <- "right" 
+allCoded[which(str_detect(allCoded$video_file, "listener\\S{0,1}$")), "listener_side"] <- "left" 
+
+allCoded %>%
+  filter(is.na(listener_side) | is.na(speaker_side))
+
+allCoded[which(tolower(allCoded$LookCode) == allCoded$speaker_side), "look_object"] <- "speaker"
+allCoded[which(tolower(allCoded$LookCode) == allCoded$listener_side), "look_object"] <- "listener"
+
+allCoded$look_object <- coalesce(allCoded$look_object, tolower(allCoded$LookCode))
+```
+
+
+# Merge Demographic Info
+```{r}
+id_group <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/demo/group.csv")
+
+colnames(id_group)[which(colnames(id_group) == "Participant.Public.ID")] <- "part_id"
+
+allCoded <- merge(allCoded, id_group, by = c("part_id") , all.x = T)
+```
+
+# Descriptive Stat
+```{r}
+library(ggplot2)
+
+allCoded %>%
+  filter(trial_type == "introNoun" | trial_type == "introVerb") %>%
+  filter(look_object == "away" | look_object == "listener" | look_object == "speaker") %>%
+  group_by(part_id, group, File, trial_type, social_cond, look_object) %>%
+  dplyr::summarise(n = n()) %>%
+  dplyr::mutate(total_frame = sum(n),
+         freq = n / sum(n)) %>%
+  group_by(group, social_cond, look_object) %>%
+  dplyr::summarise(mean_freq = mean(freq)) %>%
+  arrange(group, social_cond, look_object) %>%
+  ggplot(aes(x = look_object, y = mean_freq, fill = group)) +
+  geom_bar(
+    position = position_dodge(),
+    width = 0.9,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  facet_wrap(~social_cond)
+
+
+bad_trial <-
+  allCoded %>%
+  filter(trial_type == "videoNoun" | trial_type == "videoVerb") %>%
+  # filter(look_object == "away" | look_object == "listener" | look_object == "speaker" | look_object == "center") %>%
+  group_by(part_id, group, File, trial_type, social_cond, look_object) %>%
+  dplyr::summarise(n = n()) %>%
+  dplyr::mutate(total_frame = sum(n),
+         freq = n / sum(n)) %>%
+  filter(look_object == "cannot_tell") %>%
+  filter(freq > 0.5)
+```
+
+
+```{r}
+allCoded %>%
+  filter(!File %in% bad_trial$File) %>%
+  filter(trial_type == "videoNoun" | trial_type == "videoVerb") %>%
+  # filter(look_object == "away" | look_object == "listener" | look_object == "speaker" | look_object == "center") %>%
+  group_by(part_id, group, File, trial_type, social_cond, look_object) %>%
+  dplyr::summarise(n = n()) %>%
+  dplyr::mutate(total_frame = sum(n),
+         freq = n / sum(n)) %>%
+  group_by(group, social_cond, look_object) %>%
+  dplyr::summarise(mean_freq = mean(freq)) %>%
+  arrange(group, social_cond, look_object) %>%
+  ggplot(aes(x = social_cond, y = mean_freq, fill = group)) +
+  geom_bar(
+    position = position_dodge(),
+    width = 0.9,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  facet_wrap(~look_object) +
+  labs(x = "Social Condition",  # Change x-axis label
+       y = "Mean Proportion of Looks (%)") 
+
+
+allCoded %>%
+  filter(!File %in% bad_trial$File) %>%
+  filter(trial_type == "videoNoun" | trial_type == "videoVerb") %>%
+  filter(look_object == "listener" | look_object == "speaker" | look_object == "center" | look_object == "cannot_tell") %>%
+  group_by(part_id, group, File, trial_type, social_cond, look_object) %>%
+  dplyr::summarise(n = n()) %>%
+  dplyr::mutate(total_frame = sum(n),
+         freq = n / sum(n)) %>%
+  group_by(group, social_cond, look_object) %>%
+  dplyr::summarise(mean_freq = mean(freq)) %>%
+  arrange(group, social_cond, look_object) %>%
+  ggplot(aes(x = look_object, y = mean_freq, fill = social_cond)) +
+  geom_bar(
+    position = position_dodge(),
+    width = 0.9,
+    stat = "summary",
+    fun.y = "mean"
+  ) +
+  facet_wrap(~group) +
+  labs(x = "Social Condition",  # Change x-axis label
+       y = "Mean Proportion of Looks (%)") 
+
+
+allCoded %>%
+  filter(!File %in% bad_trial$File) %>%
+  dplyr::select(part_id, group) %>%
+  group_by(group) %>%
+  distinct(.) %>%
+  dplyr::summarise(n = n())
+
+look_freq <- 
+  allCoded %>%
+    filter(!File %in% bad_trial$File) %>%
+    filter(trial_type == "videoNoun" | trial_type == "videoVerb") %>%
+    filter(look_object == "listener" | look_object == "speaker" | look_object == "center" | look_object == "cannot_tell") %>%
+    group_by(part_id, group, File, trial_type, social_cond, look_object) %>%
+    dplyr::summarise(n = n()) %>%
+    dplyr::mutate(total_frame = sum(n),
+           freq = n / sum(n))
+
+write.csv(look_freq, "/Users/jojohu/Documents/Splash/beh_analysis/results/eye_gaze/gaze_child.csv")
+```
+
+# Mean proportion of trials
+```{r}
+codeCount_story <- 
+  allCoded %>%  
+  group_by(part_id, File, trial_type) %>%
+  dplyr::summarise(n = n())
+
+trialCount_story <- 
+  allCoded %>%  
+  group_by(part_id, File, trial_type) %>%
+  dplyr::summarise(sum = n())
+
+
+codeCount_story <- merge(codeCount_story, trialCount_story, by = c("part_id", "File", "trial_type"), all.x = T)  
+
+# Trials with more than 10% codable frames
+codable_trial <-
+  codeCount_story %>% 
+  dplyr::mutate(proportion = n /sum) %>%
+  dplyr::mutate_if(is.numeric, round, 3) %>%
+  filter(LookCode == "good" & trial_type != "blockIntro") %>%
+  dplyr::mutate(ten_percent = if_else(proportion > 0.1, 1, 0),
+         twenty_percent = if_else(proportion > 0.2, 1, 0),
+         fifty_percent = if_else(proportion > 0.5, 1, 0)) %>%
+  group_by(part_id) %>%
+  dplyr::summarise(total_trial = n(), 
+                   ten_percent = sum(ten_percent),
+                   twenty_percent = sum(twenty_percent),
+                   fifty_percent = sum(fifty_percent)) %>%
+  dplyr::mutate(ten_proportion = ten_percent/total_trial,
+         twenty_proportion = twenty_percent/total_trial,
+         fifty_proportion = fifty_percent/total_trial) %>%
+  dplyr::mutate_if(is.numeric, round, 2)
+
+
+allCoded %>%
+  group_by(group, look_object) %>%
+  dplyr::summarise(n = n())
+# write.csv(codeCount_story, "/Users/jojohu/Documents/Splash/beh_analysis/results/eye_quality/trial_quality.csv", row.names = F) 
+# Trials with more than 10% codable frames
+# write.csv(codable_trial, "/Users/jojohu/Documents/Splash/beh_analysis/results/eye_quality/codable_trial.csv", row.names = F) 
+```
+
+
+# Get proportion for each coding criterion
+```{r}
+goodPro <-
+  codeCount_story %>%
+  dplyr::mutate(proportion_good = n/sum) %>%
+  distinct(.)
+
+# Label trials that have more than 50% of good trials
+fifty_below <-
+  codeCount_story %>%
+  dplyr::mutate(proportion = n/sum) %>%
+  filter(LookCode == "good") %>%
+  filter(proportion < 0.5 | proportion == 0.5)
+
+fifty_above <-
+  codeCount_story %>%
+  dplyr::mutate(proportion = n/sum) %>%
+  filter(LookCode == "good") %>%
+  filter(proportion > 0.5)
+
+# Categorize usable vs. unusable stories
+goodPro[which(goodPro$File %in% fifty_below$File), "usage"] <- "unuse"
+goodPro[which(goodPro$File %in% fifty_above$File), "usage"] <- "use"
+
+# Merge proportions of coding criteria with by-trial coded data
+allPro <- merge(goodPro, allCoded, all.y = T)
+
+id_group <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/demo/group.csv")
+
+colnames(id_group)[which(colnames(id_group) == "Participant.Public.ID")] <- "part_id"
+
+allPro <- merge(allPro, id_group, all.x = T)
+```
+
+
+# Summarise whether or not participants are usable
+```{r}
+usage_cond <-
+  allPro %>%
+  filter(usage == "use") %>%
+  dplyr::select(part_id, group, File, trial_type, social_cond, usage) %>%
+  distinct(.) %>%
+  group_by(part_id, group, trial_type, social_cond, usage) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(str_detect(trial_type, "video")) %>%
+  dplyr::mutate(trial_type = str_remove(trial_type, ("Noun|Verb"))) %>%
+  group_by(part_id, group, trial_type, social_cond, usage) %>%
+  dplyr::summarise(n = sum(n)) %>%
+  group_by(part_id, group, trial_type) %>%
+  dplyr::summarise(usable_condition_count = n()) %>%
+  dplyr::mutate(condition_usage = ifelse(usable_condition_count == 2, "use", "unuse"))
+```
+
+
+
+
+
+
+## Check Coder Reliability
+```{r}
+library(reshape2)
+
+intercoder <- 
+  codeDF %>%
+  filter(Coder == "EC" | Coder == "KC") %>%
+  filter(str_detect(File, "smile_c_042")) %>%
+  filter(str_detect(File, "block_3|block_4")) %>%
+  distinct(.)
+
+# Get rid of the second or third instance of any duplicated frames from the same coder, potentially due to wrong keypress
+if(length(which(duplicated(intercoder[,c("File", "Frame", "Coder")]))) > 0) {
+  intercoder <-
+    intercoder[-which(duplicated(intercoder[,c("File", "Frame", "Coder")])),]
+}
+
+
+reshape2::dcast(intercoder, File + Frame ~ Coder, value.var = c("KeyPress")) %>% 
+    filter(!is.na(KC) & !is.na(VF)) %>%
+  filter(str_detect(KC, "l|r") | str_detect(VF, "l|r")) %>%
+  dplyr::mutate(reliability = ifelse(VF == KC, 1, 0)) %>%
+  group_by(File) %>%
+  dplyr::summarise(mean_reliability = mean(reliability))
+
+temp <-
+  reshape2::dcast(intercoder, File + Frame ~ Coder, value.var = c("KeyPress")) %>% 
+  filter(!is.na(VF) & !is.na(KC)) %>%
+  dplyr::mutate(reliability = ifelse(VF == KC, 1, 0)) %>%
+  group_by(File)
+
+# write.csv(temp, "/Users/jojohu/Downloads/coding.csv", row.names = F)
+```
+
+
+
+
+# SPLASH ADULT WEB GAZER ANALYSIS
+## Read in web gazer files
+```{r}
+library(stringr)
+library(dplyr)
+library(readxl)
+
+webgazer <-
+  list.files(path = "/Users/jojohu/Documents/Splash/beh_analysis/data_exp_91146-v3/uploads",
+             pattern = "\\S+.xlsx$", full.names = T, recursive = T)
+
+webgazer <- webgazer[which(str_detect(webgazer, "uploads/"))]
+
+read_xlsx <-
+  function(x) {
+    temp <- readxl::read_excel(x)
+    temp[,c("eyegazer_file")] <- basename(x)
+    
+    tempEyezone <- unique(temp$zone_name[which(str_detect(temp$zone_name, "Eyetracking"))])
+    tempTrial <- paste(tempEyezone, collapse=",")
+    
+    temp$trial <- tempTrial 
+      
+    return(temp)
+  }
+
+emptyList <- list()
+
+for(i in 1:length(webgazer)) {
+  emptyList[[i]] <- read_xlsx(webgazer[i])
+}
+
+webgazer <- do.call(dplyr::bind_rows, emptyList)
+
+
+private_id <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/demo/private_id.csv")
+
+webgazer$eyegazer_file <- as.character(webgazer$eyegazer_file)
+
+webgazer <-
+  webgazer %>%
+  filter(str_detect(eyegazer_file, "(calibrate|collect)")) %>%
+  dplyr::mutate(trial = str_remove_all(trial, "(,NA|NA,|NA|screen,|gorilla,)"))
+
+unique(webgazer$trial)
+```
+
+
+```{r}
+webgazer$video_num <- str_extract(webgazer$eyegazer_file, "(?<=(calibrate|collect)-)\\S+(?=-\\S+.xlsx)")
+webgazer$video_subnum <- str_extract(webgazer$eyegazer_file, "(?<=(calibrate|collect)-[:digit:]{1,2}-)\\S+(?=.xlsx)")
+webgazer$task <- str_extract(webgazer$eyegazer_file, "(?<=task-)\\S+(?=-\\d+-(calibrate|collect))")
+webgazer$version <- str_extract(webgazer$eyegazer_file, "(?<=\\d{5}-)\\S{1,2}(?=-)")
+
+webgazer$video_num <- as.numeric(webgazer$video_num)
+webgazer$video_subnum <- as.numeric(webgazer$video_subnum)
+   
+library("dplyr")
+webgazer <- merge(webgazer, private_id, by.x = c("participant_id"), by.y = c("Participant.Private.ID"), all.x = T)
+
+webgazer <-
+  webgazer %>%
+  filter(!is.na(Participant.Public.ID))
+```
+
+
+
+```{r}
+webgazer <-
+  webgazer %>%
+  group_by(participant_id, video_num, video_subnum) %>%
+  arrange(participant_id, video_num, video_subnum) %>%
+  filter(!is.na(Participant.Public.ID))
+```
+
+
+## Compile all behavioral Data
+```{r, include = F}
+library(stringr)
+library(dplyr)
+
+# https://stackoverflow.com/questions/28700906/r-rbind-a-list-of-data-frames-with-different-columns-in-different-data-frames
+behDF <-
+  list.files(path = "/Users/jojohu/Documents/Splash/beh_analysis/data_exp_91146-v3",
+             pattern = "data\\S+.csv$", full.names = T, recursive = T)
+
+behDF <- lapply(behDF, read.csv)
+
+# Rbind data frames with different column length, fill = TRUE fills nonmatched columns with NA in the nonmatched dataframe
+library(data.table)
+indx <- sapply(behDF, ncol)
+behDF <- lapply(split(behDF, indx), rbindlist, fill=TRUE )
+
+# Data with 51 columns actually did not have data; failed at eye tracking tests
+behDF <- behDF[-which(names(behDF) %in% c(51, 53))]
+
+colList <- sapply(behDF, colnames)
+colList <- Reduce(intersect, colList)
+
+behDF <- rbindlist(behDF, fill=TRUE)
+behDF$Response <- as.character(behDF$Response)
+behDF <- behDF[which(behDF$Response != ""),]
+```
+
+
+```{r}
+behDF$Participant.Public.ID <- str_pad(behDF$Participant.Public.ID, 3, pad = "0")
+behDF$Participant.Public.ID <- as.character(behDF$Participant.Public.ID)
+
+# Reset child part_id
+behDF[which(as.numeric(as.character(behDF$Participant.Public.ID)) < 900 & !str_detect(behDF$Participant.Public.ID, "smile")),]$Participant.Public.ID <- 
+  paste0("smile_c_", behDF[which(as.numeric(as.character(behDF$Participant.Public.ID)) < 900 & !str_detect(behDF$Participant.Public.ID, "smile")),]$Participant.Public.ID)
+# Reset adult part_id
+behDF[which(as.numeric(as.character(behDF$Participant.Public.ID)) > 899 & !str_detect(behDF$Participant.Public.ID, "smile")),]$Participant.Public.ID <- 
+  paste0("smile_a_", behDF[which(as.numeric(as.character(behDF$Participant.Public.ID)) > 899 & !str_detect(behDF$Participant.Public.ID, "smile")),]$Participant.Public.ID)
+
+# smile_c_449 was run with the wrong ID:
+behDF[which(behDF$Participant.Public.ID == "smile_c_384"), "Participant.Public.ID"] <- "smile_c_449"
+# This should be 0
+which(behDF$Participant.Public.ID == "smile_c_384")
+
+# Take care of special IDs used during administration
+behDF[which(behDF$Participant.Public.ID == "904_1"), "Participant.Public.ID"] <- "smile_a_904"
+
+behDF <- merge(behDF, smile_demo[,c("record_id", "short_id")], by.x = "Participant.Public.ID", by.y = "short_id", all.x = T)
+
+behDF[which(!is.na(behDF$record_id)),]$Participant.Public.ID <- behDF[which(!is.na(behDF$record_id)),]$record_id
+
+behDF$Participant.Public.ID <- str_extract(behDF$Participant.Public.ID, "smile_(a|c)_[[:alnum:]]+")
+# This should be 0
+behDF %>%
+  filter(is.na(Participant.Public.ID)) %>%
+  dplyr::select(Participant.Private.ID)
+
+unique(behDF$Participant.Public.ID)
+
+behCond <-
+  behDF %>%
+  dplyr::select(-one_of("Participant.Public.ID")) %>%
+  dplyr::rename(participant_id = Participant.Private.ID,
+                spreadsheet_row = Spreadsheet.Row,
+                screen_index = Screen.Number,
+                version = Experiment.Version,
+                zone_name = Zone.Name) %>%
+  dplyr::mutate(task = str_extract(Tree.Node.Key, "(?<=task-)\\S+"))
+
+# Extract the conditions for the eye tracking zones
+gazerZone <- unique(unlist(str_split(webgazer$trial, ",")))
+
+behCond <-
+  behCond %>%
+  dplyr::select("participant_id", "version", "task", "spreadsheet_row", "screen_index", "zone_name", "display", "intro_file", "video_file") %>%
+  dplyr::rename("trial" = "zone_name") %>%
+  filter(trial %in% gazerZone) %>%
+  filter(!is.na(spreadsheet_row)) %>%
+  filter(!is.na(trial)) %>%
+  distinct(.)
+```
+
+
+## Match behavioral data with webGazer data
+```{r}
+gazerCond <- 
+  merge(webgazer, behCond, 
+      by = c("participant_id", "version", "task", "trial", "spreadsheet_row", "screen_index"), all.x = T)
+
+# Merging should not add rows, Should be true
+nrow(webgazer) == nrow(gazerCond)
+
+# Check that all eye tracking non-calibration trials have matched conditions; Should be 0
+gazerCond %>%
+  filter(filename == "collect") %>%
+  filter(is.na(video_file))
+
+gazerCond <- 
+  gazerCond %>%
+  filter(str_detect(trial, "videoBlock")) %>%
+  filter(!is.na(video_file)) %>%
+  dplyr::mutate(social_cond = str_extract(video_file, "(front|side)"),
+         listener_side = ifelse(str_detect(video_file, "listener_right"), "right", "left"),
+         speaker_side = ifelse(str_detect(video_file, "listener_right"), "left", "right"),
+         story = str_extract(video_file, "[:alpha:]+(?=_)")) %>%
+  dplyr::mutate(social_cond = dplyr::recode(social_cond, "side" = "Overhear", "front" = "Direct"))
+```
+
+
+
+## Match behavioral accuracy data
+```{r}
+# Retention Accuracy
+behAcc <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/results/allRe_data.csv")
+
+behRet <-
+  behAcc %>%
+  dplyr::select(Participant.Public.ID, group, story, test_time, test_three, corr) %>%
+  group_by(Participant.Public.ID, group, story, test_time, test_three) %>%
+  dplyr::summarise(corr = mean(corr, na.rm = T)) %>%
+  filter(test_time == "retention") %>%
+  distinct(.)
+
+gazerRet <- 
+  merge(gazerCond, behRet, by = c("Participant.Public.ID", "story"), all.x = T)
+
+nrow(gazerRet) == nrow(gazerCond)
+```
+
+
+```{r}
+# TO DO: Add story, condition, speaker_side. Check if the number of stories is 20 for each participant 
+gazerCond %>%
+  filter(!is.na(video_file)) %>%
+  dplyr::select(Participant.Public.ID, spreadsheet_row) %>%
+  distinct(.) %>%
+  group_by(Participant.Public.ID) %>%
+  dplyr::summarise(n = length(unique(spreadsheet_row))) %>%
+  filter(n != 20)
+```
+
+## Analyze eye gazer data
+```{r}
+library('saccades')
+library('tidyverse')
+library('ggplot2')
+library('jpeg')
+
+#visualise trials -- note how noisy the predictions are 
+#it is difficult to tell what is going on though without seeing the images 
+gazerCond %>%
+  filter(type == "prediction" & filename == "collect") %>%
+  filter(display == "videoblock") %>%
+  filter(trial %in% c("videoBlockEyetrackingScreen1", "videoBlockEyetrackingScreen2")) %>%
+  dplyr::select(Participant.Public.ID, display, social_cond, speaker_side, x_pred_normalised, y_pred_normalised) %>%
+  ggplot(aes(x_pred_normalised, y_pred_normalised, color = speaker_side)) +
+    geom_point(size=0.2) +
+    coord_fixed() +
+    facet_wrap(c("social_cond", "speaker_side"))
+
+ggsave("/Users/jojohu/Documents/Splash/beh_analysis/results/adult_rawgaze.png", width = 40, height = 20, units = "cm", bg="transparent")
+```
+
+
+
+
+
+```{r}
+img <- readJPEG("/Users/jojohu/Documents/Splash/design/speaker_front_right.jpg") # the image 
+
+zone <-
+  gazerCond %>%
+  filter(zone_name == "screen") %>%
+  filter(trial %in% c("videoBlockEyetrackingScreen1")) %>%
+  # filter(social_cond == "Direct" & speaker_side == "right") %>%
+  distinct(.)
+  
+
+orig_x <- mean(zone$zone_x_normalised)
+orig_y <- mean(zone$zone_y_normalised)
+width <- mean(zone$zone_width_normalised)
+height <- mean(zone$zone_height_normalised)
+
+gazerCond %>%
+  filter(filename == "collect") %>%
+  filter(trial %in% c("videoBlockEyetrackingScreen1")) %>%
+  # filter(social_cond == "Direct" & speaker_side == "right") %>%
+  ggplot(aes(x_pred_normalised, y_pred_normalised, color = speaker_side)) +
+  # facet_grid(c("social_cond", "Participant.Public.ID")) +
+  annotation_raster(img, xmin=orig_x, xmax=orig_x+width, ymin=orig_y, ymax=orig_y+height) +
+    geom_point(size=0.2, alpha = 0.2) +
+  facet_wrap(c("social_cond", "speaker_side"))
+
+
+gazerCond %>%
+  filter(filename == "collect") %>%
+  filter(trial %in% c("videoBlockEyetrackingScreen2")) %>%
+  # filter(social_cond == "Direct" & speaker_side == "right") %>%
+  ggplot(aes(x_pred_normalised, y_pred_normalised, color = speaker_side)) +
+  # facet_grid(c("social_cond", "Participant.Public.ID")) +
+  annotation_raster(img, xmin=orig_x, xmax=orig_x+width, ymin=orig_y, ymax=orig_y+height) +
+    geom_point(size=0.2, alpha = 0.2) +
+  facet_wrap(c("social_cond", "speaker_side"))
+```
+
+
+```{r}
+#Drop rows that are not predictions 
+preds <- data[grepl("prediction", data$type),]
+
+#Make dataframe with just time, x,y and trial columns 
+preds_minimal <- preds %>%
+  select(time_stamp, x_pred_normalised, y_pred_normalised, screen_index)
+preds_minimal <- preds_minimal %>%
+  rename(time = time_stamp, x = x_pred_normalised, y = y_pred_normalised, trial = screen_index)
+
+preds_minimal %>%
+  ggplot(aes(x_pred_normalised, y_pred_normalised, color = speaker_side)) +
+    geom_point(size=0.2) +
+    # facet_grid(c("social_cond", "Participant.Public.ID")) +
+  annotation_raster(img, xmin=orig_x, xmax=orig_x+width, ymin=orig_y, ymax=orig_y+height)
+```

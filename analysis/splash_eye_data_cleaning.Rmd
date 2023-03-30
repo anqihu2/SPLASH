@@ -1,0 +1,670 @@
+---
+title: "splash_eye_tracking_analysis"
+author: "Jojo Hu"
+date: "6/10/2022"
+output: html_document
+---
+
+# Copy eye tracking videos to NAS and Rename/ Reorganize them into subject sub-folders
+```{r}
+library(stringr)
+library(dplyr)
+
+private_id <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/demo/private_id.csv")
+
+webm <-
+  list.files(path = "/Users/jojohu/Documents/Splash/beh_analysis",
+             pattern = ".webm$", full.names = T, recursive = T)
+
+# If the videos are already on NAS, use this and command out the onNAS line below
+# webm <-
+#   list.files(path = "/Volumes/data/projects/smile/recordings/eye_recordings/splash",
+#              pattern = ".webm$", full.names = T, recursive = F)
+
+webm <- as.data.frame(webm)
+webm$webm <- as.character(webm$webm)
+webm$file_name <- basename(as.character(webm$webm))
+
+webm$Participant.Private.ID <- str_extract(webm$file_name, "(?<=-[:digit:]{1,2}-)\\S+(?=-task)")
+webm$video_num <- str_extract(webm$file_name, "(?<=Video-)\\S+(?=-\\S+.webm)")
+webm$video_subnum <- str_extract(webm$file_name, "(?<=Video-[:digit:]{1,2}-)\\S+(?=.webm)")
+webm$trial <- str_extract(webm$file_name, "(?<=-)[:alpha:]+(?=Video)")
+
+webm$Participant.Private.ID <- as.numeric(webm$Participant.Private.ID)
+webm$video_num <- as.numeric(webm$video_num)
+webm$video_subnum <- as.numeric(webm$video_subnum)
+   
+library("dplyr")
+webm <- merge(webm, private_id, by.x = c("Participant.Private.ID"), by.y = c("Participant.Private.ID"), all.x = T)
+
+webm <-
+  webm %>%
+  group_by(Participant.Private.ID, video_num, video_subnum) %>%
+  arrange(Participant.Private.ID, video_num, video_subnum) %>%
+  filter(!is.na(Participant.Public.ID))
+
+wCalib <-
+ webm %>%
+   filter(trial == "calibration" & video_subnum == 1) %>%
+   group_by(Participant.Public.ID) %>%
+   arrange(Participant.Public.ID, video_num) %>%
+   dplyr::mutate(block = 1:n())
+
+idwNoCalib <- setdiff(webm$Participant.Public.ID, wCalib$Participant.Public.ID)
+
+noCalibRow <- 
+  webm %>%
+  subset(Participant.Public.ID %in% idwNoCalib) %>%
+  filter(trial == "blockIntro" & video_subnum == 1) 
+
+if (nrow(noCalibRow) > 0) {
+  noCalib <- 
+  webm %>%
+  subset(Participant.Public.ID %in% idwNoCalib) %>%
+   filter(trial == "blockIntro" & video_subnum == 1) %>%
+   group_by(Participant.Public.ID) %>%
+   arrange(Participant.Public.ID, video_num) %>%
+   dplyr::mutate(block = 1:n())
+}
+
+blockNum <- rbind(noCalib, wCalib)
+
+webm <- 
+  merge(webm, blockNum, by = c("Participant.Private.ID", "webm", "file_name", "video_num", "video_subnum", "trial", "Participant.Public.ID"), all.x = T)
+
+library(zoo)
+
+webm <-
+  webm %>%
+  group_by(Participant.Private.ID, video_num, video_subnum) %>%
+  arrange(Participant.Private.ID, video_num, video_subnum)
+
+# If the block of the first row is NA, then add block number so that na.locf below will work
+if (webm[1,"trial"] == "calibration" & is.na(webm[1,"block"])) {
+  webm[1,"block"] <- 1
+}
+
+webm$block <- na.locf(webm$block)
+
+webm$new_name <- paste(webm$Participant.Public.ID, "block", webm$block, webm$trial, sep = "_")
+
+webm$new_name <- paste(webm$video_num, webm$video_subnum, webm$new_name, sep = ".")
+
+webm$new_name <- paste0(webm$Participant.Public.ID, "/", "block", webm$block, "/", webm$new_name, ".webm")
+
+webm$new_path <- file.path("/Volumes/data/projects/smile/recordings/eye_recordings/splash", webm$new_name)
+
+webm$copied_path <- file.path("/Volumes/data/projects/smile/recordings/eye_recordings/splash", webm$file_name)
+
+webmAll <- webm
+
+unique(webmAll$Participant.Public.ID)
+```
+
+
+## Copy and rename files
+```{r}
+onNAS <-
+  list.files(path = "/Volumes/data/projects/smile/recordings/eye_recordings/splash",
+             pattern = ".webm$", full.names = T, recursive = T)
+
+if(length(which(webm$new_path %in% onNAS)) > 0) {
+  webm <- webm[-which(webm$new_path %in% onNAS),]
+}
+
+## Too slow (use mac minis in lab to do this)
+file.copy(webm$webm, webm$copied_path, overwrite = F)
+
+lapply(unique(file.path("/Volumes/data/projects/smile/recordings/eye_recordings/splash", webm$Participant.Public.ID)),
+       function(x) if(!dir.exists(x)) dir.create(x))
+lapply(unique(file.path("/Volumes/data/projects/smile/recordings/eye_recordings/splash", webm$Participant.Public.ID, "block1")),
+       function(x) if(!dir.exists(x)) dir.create(x))
+lapply(unique(file.path("/Volumes/data/projects/smile/recordings/eye_recordings/splash", webm$Participant.Public.ID, "block2")),
+       function(x) if(!dir.exists(x)) dir.create(x))
+lapply(unique(file.path("/Volumes/data/projects/smile/recordings/eye_recordings/splash", webm$Participant.Public.ID, "block3")),
+       function(x) if(!dir.exists(x)) dir.create(x))
+lapply(unique(file.path("/Volumes/data/projects/smile/recordings/eye_recordings/splash", webm$Participant.Public.ID, "block4")),
+       function(x) if(!dir.exists(x)) dir.create(x))
+
+file.rename(webm$copied_path, webm$new_path)
+```
+
+
+
+
+# Extract time stamps for videos
+## Compile all Data
+```{r, include = F}
+library(stringr)
+library(dplyr)
+
+output_path <- "/Users/jojohu/Documents/Splash/beh_analysis/results/"
+# https://stackoverflow.com/questions/28700906/r-rbind-a-list-of-data-frames-with-different-columns-in-different-data-frames
+behDF <-
+  list.files(path = "/Users/jojohu/Documents/Splash/beh_analysis",
+             pattern = "data\\S+.csv$", full.names = T, recursive = T)
+
+behDF <- lapply(behDF, read.csv)
+
+# Rbind data frames with different column length, fill = TRUE fills nonmatched columns with NA in the nonmatched dataframe
+library(data.table)
+indx <- sapply(behDF, ncol)
+behDF <- lapply(split(behDF, indx), rbindlist, fill=TRUE )
+
+# Data with 51 columns actually did not have data; failed at eye tracking tests
+behDF <- behDF[-which(names(behDF) %in% c(51, 53))]
+
+colList <- sapply(behDF, colnames)
+colList <- Reduce(intersect, colList)
+
+behDF <- rbindlist(behDF, fill=TRUE)
+behDF$Response <- as.character(behDF$Response)
+behDF <- behDF[which(behDF$Response != ""),]
+```
+
+
+```{r}
+behDF$Participant.Public.ID <- str_pad(behDF$Participant.Public.ID, 3, pad = "0")
+behDF$Participant.Public.ID <- as.character(behDF$Participant.Public.ID)
+
+# Reset child part_id
+behDF[which(as.numeric(as.character(behDF$Participant.Public.ID)) < 900 & !str_detect(behDF$Participant.Public.ID, "smile")),]$Participant.Public.ID <- 
+  paste0("smile_c_", behDF[which(as.numeric(as.character(behDF$Participant.Public.ID)) < 900 & !str_detect(behDF$Participant.Public.ID, "smile")),]$Participant.Public.ID)
+# Reset adult part_id
+behDF[which(as.numeric(as.character(behDF$Participant.Public.ID)) > 899 & !str_detect(behDF$Participant.Public.ID, "smile")),]$Participant.Public.ID <- 
+  paste0("smile_a_", behDF[which(as.numeric(as.character(behDF$Participant.Public.ID)) > 899 & !str_detect(behDF$Participant.Public.ID, "smile")),]$Participant.Public.ID)
+
+# smile_c_449 was run with the wrong ID:
+behDF[which(behDF$Participant.Public.ID == "smile_c_384"), "Participant.Public.ID"] <- "smile_c_449"
+# This should be 0
+which(behDF$Participant.Public.ID == "smile_c_384")
+
+# Take care of special IDs used during administration
+behDF[which(behDF$Participant.Public.ID == "904_1"), "Participant.Public.ID"] <- "smile_a_904"
+behDF[which(behDF$Participant.Public.ID == "408_c"), "Participant.Public.ID"] <- "smile_c_408"
+
+behDF <- merge(behDF, smile_demo[,c("record_id", "short_id")], by.x = "Participant.Public.ID", by.y = "short_id", all.x = T)
+
+behDF[which(!is.na(behDF$record_id)),]$Participant.Public.ID <- behDF[which(!is.na(behDF$record_id)),]$record_id
+ 
+# Remove pilot participants and smile_c_011 who only completed half of the task; smile_c_023 did the task over three weeks:
+behDF <- behDF[-which(behDF$Participant.Public.ID == "test7" | behDF$Participant.Public.ID == "smile_c_011"),]
+
+behDF$Participant.Public.ID <- str_extract(behDF$Participant.Public.ID, "smile_(a|c)_[[:alnum:]]+")
+```
+
+
+## Extract columns relevant to time stamps
+```{r}
+uploaded <- behDF[which(str_detect(behDF$Response, ("uploads|RECORDING|VIDEO|webm"))),]
+
+uploaded <- uploaded[-which(str_detect(uploaded$Zone.Name, ("posttest|comprehensionQuestion|confidenceQuestion|blockTest"))),]
+
+uploaded <- uploaded[-which(str_detect(uploaded$Response, ("xlsx|webm"))),]
+
+uploaded$identifier <- paste(uploaded$Participant.Private.ID, uploaded$Spreadsheet.Row, uploaded$Screen.Number, sep = "_")
+
+write.csv(uploaded, "/Users/jojohu/Documents/Splash/beh_analysis/results/video_condition.csv", row.names = F)
+write.csv(uploaded, "/Volumes/data/projects/smile/recordings/eye_recordings/splash/video_condition.csv", row.names = F)
+```
+
+
+## Extract raw time stamps for videos
+```{r}
+library(reshape)
+
+dfL <- unique(uploaded[,c("identifier", "Participant.Private.ID", "Spreadsheet.Row", "Screen.Number", "Response", "UTC.Date")])
+
+dfW <- cast(dfL, identifier+`Participant.Private.ID`+`Spreadsheet.Row`+`Screen.Number`~Response, value = "UTC.Date")
+
+# Get rid of the trials that do not have recordings or have two recordings
+oneRec <- 
+  dfW %>%
+  filter(`STARTED RECORDING` == 1 & `STOPPED RECORDING` == 1)
+
+dfL <- 
+  dfL %>%
+  filter(identifier %in% unique(oneRec$identifier)) %>%
+  subset(Response != "VIDEO PLAYING EVENT FIRED" & Response != "VIDEO TIMEUPDATE EVENT FIRED")
+
+rawTime <- cast(dfL, identifier+`Participant.Private.ID`+`Spreadsheet.Row`~Response, value = "UTC.Date")
+```
+
+
+## Calculate time differences between recording start and video start
+```{r}
+rawTime[,c("STARTED RECORDING", "STOPPED RECORDING", "VIDEO ENDED EVENT FIRED", "VIDEO STARTED")] <- 
+  lapply(rawTime[,c("STARTED RECORDING", "STOPPED RECORDING", "VIDEO ENDED EVENT FIRED", "VIDEO STARTED")], 
+                                function(x) as.POSIXct(x, format = "%d/%m/%Y %H:%M:%OS"))
+
+rawTime$start_time <- rawTime$`VIDEO STARTED` - rawTime$`STARTED RECORDING`
+
+rawTime$end_delay <- rawTime$`STOPPED RECORDING` - rawTime$`VIDEO ENDED EVENT FIRED`
+
+rawTime$recording_duration <- rawTime$`STOPPED RECORDING` - rawTime$`STARTED RECORDING`
+
+rawTime$end_time <- rawTime$recording_duration - rawTime$end_delay
+```
+
+## Match videos and subject with time stamps
+```{r}
+recLink <- unique(behDF[which(str_detect(behDF$Response, ("^[:digit:]\\S+webm"))),])
+
+recLink$identifier <- paste(recLink$Participant.Private.ID, recLink$Spreadsheet.Row, recLink$Screen.Number, sep = "_")
+
+recLink <- recLink[,c("identifier", "Participant.Private.ID", "Spreadsheet.Row", "Screen.Number", "Response")]
+
+rawTime <- merge(rawTime, recLink, by = c("identifier", "Participant.Private.ID", "Spreadsheet.Row"), all.x = T)
+```
+
+## Merge with all the webm files again to extract time stamps
+```{r}
+extractedTime <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/results/story_timestamp.csv")
+
+webmNew <- webmAll[which(!webmAll$Participant.Private.ID %in%  unique(extractedTime$Participant.Private.ID)),]
+
+timeStory <-
+  merge(webmNew, rawTime, 
+      by.x = c("Participant.Private.ID", "file_name"), 
+      by.y = c("Participant.Private.ID", "Response"), all.x = T)
+
+# Check this rbind to make sure all the column types match between DFs
+colnames(timeStory) <- str_replace(colnames(timeStory), " ", ".")
+names(timeStory)[names(timeStory) == 'VIDEO.ENDED EVENT FIRED'] <- "VIDEO.ENDED.EVENT.FIRED"
+timeStory <- rbind(extractedTime, timeStory)
+
+write.csv(timeStory, "/Users/jojohu/Documents/Splash/beh_analysis/results/story_timestamp.csv", row.names = F)
+write.csv(timeStory, "/Volumes/data/projects/smile/recordings/eye_recordings/splash/story_timestamp.csv", row.names = F)
+```
+
+
+
+
+## Extract calibration video time stamps
+### Merge calibration Gorilla videos with Webgazer output
+```{r}
+eyeDF <- behDF
+
+# Prep Use row number to get the start recording for the calibration videos, always calibration file - 1 row
+eyeDF$row_name <- as.numeric(as.character(row.names(behDF)))
+
+calFile <- unique(eyeDF[which(str_detect(eyeDF$Response, "^[:digit:]\\S+calibrate")),])
+
+calFile$identifier <- paste(calFile$Participant.Private.ID, calFile$Spreadsheet.Row, calFile$Screen.Number, sep = "_")
+
+calVideo <- unique(eyeDF[which(str_detect(eyeDF$Response, "^[:digit:]\\S+calibration")),])
+
+calVideo$identifier <- paste(calVideo$Participant.Private.ID, calVideo$Spreadsheet.Row, calVideo$Screen.Number, sep = "_")
+
+calVideo <-
+  merge(calVideo[,c("identifier", "Participant.Private.ID", "Spreadsheet.Row", "Response")], 
+      calFile[,c("identifier", "Participant.Private.ID",  "Spreadsheet.Row", "Response", "UTC.Date", "UTC.Timestamp", "Local.Date", "Local.Timestamp", "row_name")], 
+      by = c("identifier", "Participant.Private.ID", "Spreadsheet.Row"), all.x = T)
+
+names(calVideo)[names(calVideo) == "Response.x"] <- "file_name"
+names(calVideo)[names(calVideo) == "Response.y"] <- "eyegazer_file"
+
+# Now Use row number to get the start/ end recording for the calibration videos, always calibration file - 1 row
+eyeRecTime_row <- calVideo$row_name - 1
+eyeRecTime_row <- eyeDF[c(eyeRecTime_row),]
+
+eyeRecTime_end <- calVideo$row_name + 3
+eyeRecTime_end <- eyeDF[c(eyeRecTime_end),]
+eyeRecTime_end[which(eyeRecTime_end$Response == "STARTED RECORDING"), "UTC.Timestamp"] <- NA
+
+calVideo$recording_onset <- eyeRecTime_row$UTC.Timestamp
+calVideo$recording_onset <- as.POSIXct(calVideo$recording_onset/1000, origin="1970-01-01")
+
+calVideo$recording_offset <- eyeRecTime_end$UTC.Timestamp
+calVideo$recording_offset <- as.POSIXct(calVideo$recording_offset/1000, origin="1970-01-01")
+```
+
+
+### Read in Webgazer output
+```{r}
+library("readxl")
+
+webgazer <-
+  list.files(path = "/Users/jojohu/Documents/Splash/beh_analysis",
+             pattern = "calibrate\\S+$", full.names = T, recursive = T)
+
+read_xlsx <-
+  function(x) {
+    temp <- readxl::read_excel(x)
+    temp[,c("eyegazer_file")] <- basename(x)
+    
+    return(temp)
+  }
+
+emptyList <- list()
+
+for(i in 1:length(webgazer)) {
+  emptyList[[i]] <- read_xlsx(webgazer[i])
+}
+
+webgazer <- do.call(rbind, emptyList)
+
+startGazer <- 
+  webgazer %>%
+  filter(type == "calibration" & time_elapsed == 0) %>%
+  group_by(participant_id) %>%
+  arrange(participant_id, spreadsheet_row)
+
+startGazer$gazer_date <- as.POSIXct(startGazer$time_stamp/1000, origin="1970-01-01")
+
+endGazer <- 
+  webgazer %>%
+  filter(type == "end of calibration") %>%
+  group_by(participant_id) %>%
+  arrange(participant_id, spreadsheet_row)
+ 
+nrow(startGazer) == nrow(endGazer)
+ 
+startGazer <- merge(startGazer, 
+                    endGazer[,c("participant_id", "spreadsheet_row", "eyegazer_file", "time_stamp")], 
+                    by = c("participant_id", "spreadsheet_row", "eyegazer_file"),
+                    all.x = T)
+
+startGazer$gazer_end <- as.POSIXct(startGazer$time_stamp.y/1000, origin="1970-01-01")
+```
+
+
+## Extract actual start time and end time for calibration in the calibration Gorilla Recording. End time seems to be weird. Need to check data to see if the end time is actually true.
+```{r}
+calVideo <- merge(calVideo, startGazer, 
+                  by.x = c("Participant.Private.ID", "eyegazer_file"),
+                  by.y = c("participant_id", "eyegazer_file"), all.x = T)
+
+calVideo$start_time <- calVideo$gazer_date - calVideo$recording_onset
+
+# The end time of the calibration video recording seems to be weird as there should not be negative numbers. Not a good idea to include.
+calVideo$end_time <- round(calVideo$recording_offset - calVideo$gazer_end, 2)
+```
+
+
+
+
+## Zoom Recordings Cleaning
+### Clean ImageAI output
+```{r}
+library(dplyr)
+library(stringr)
+library(reshape)
+
+zoom_analyzed <-
+  list.files(path = "/Volumes/data/projects/smile/recordings/splash_analyzed_recordings",
+             pattern = "screen.csv$", full.names = T, recursive = T)
+
+zoom_analyzed <- lapply(zoom_analyzed, read.csv)
+
+zoom <- do.call(dplyr::bind_rows, zoom_analyzed)
+
+# All coding was by frames or by seconds. the max frame rate should be 30 frames per second; 40 columns should be more than enough; the ImageAI coding was done using 25 frames per second to save computation power
+zoom <-
+  zoom %>%
+  filter(str_detect(output_arrays, "[:alpha:]")) %>%
+  mutate(output_arrays = as.character(output_arrays),
+         File = as.character(File)) %>%
+  tidyr::separate(output_arrays, into = paste("Col", 1:40, sep = "_"), "],")
+
+zoom <- zoom[, colSums(is.na(zoom)) != nrow(zoom)]
+
+zoomL <-
+  melt(id.vars = c("File", "frame_rate", "Second"), data = zoom) %>%
+  filter(str_detect(value, "[:alpha:]")) %>%
+  mutate(Frame = as.numeric(as.character(str_remove(variable, "Col_")))) %>%
+  dplyr::select(-one_of("variable")) %>%
+  arrange(Second, Frame) 
+
+objectList <- str_extract_all(zoomL$value, "person|kite")
+
+temp <- list()
+
+for (i in 1:length(objectList)) {
+  temp[i] <- paste(unlist(objectList[i]), collapse='_')  
+}
+
+objectList <- do.call(rbind, temp)
+
+zoomL$object <- objectList
+
+zoomL %>%
+  group_by(object) %>%
+  dplyr::summarise(n = n())
+  
+zoomL <-
+  zoomL %>%
+  filter(str_detect(object, "[:alpha:]")) %>%
+  filter(object != "person") %>%
+  arrange(File, Second, Frame) %>%
+  mutate(diff_sec = append(NA, diff(Second)),
+         diff_frame = append(NA, diff(Frame)))
+```
+
+### Extract time stamps for cutting
+```{r}
+library(lubridate)
+library(stringr)
+
+trimmedL <-
+  zoomL %>%
+  group_by(File) %>%
+  mutate(video_break = ifelse((diff_sec > 1 | diff_sec < 0), "yes", "no")) %>%
+  filter(video_break == "yes") %>%
+  arrange(File, Second, Frame) %>%
+  mutate(hour = hour(seconds_to_period(Second)),
+         min = minute(seconds_to_period(Second)),
+         sec = second(seconds_to_period(Second))) %>%
+  mutate(hour = str_pad(hour, 2, pad = "0"),
+         min = str_pad(min, 2, pad = "0"),
+         sec = str_pad(sec, 2, pad = "0")) %>%
+  mutate(tp = paste0(hour, ":", min, ":", sec))
+
+countRow <- 
+  trimmedL %>%
+  filter(diff_sec > 2) %>%
+  arrange(File, Second, Frame) %>%
+  group_by(File) %>%
+  mutate(rowNumber = 1:n())
+
+evenRow <-
+  countRow %>%
+  filter(rowNumber %% 2 == 0) %>%
+  group_by(File) %>%
+  mutate(newRow = 1:n()) %>%
+  dplyr::select(-one_of("rowNumber"))
+
+oddRow <-
+  countRow %>%
+  filter(rowNumber %% 2 == 1) %>%
+  group_by(File) %>%
+  mutate(newRow = 1:n()) %>%
+  dplyr::select(-one_of("rowNumber"))
+
+# Get the intervals based on odd-even trials
+# Get rid of the extra (even) rows at the end of each file, as the last timestamp usually does not correspond to a story
+breakTime1 <-
+  merge(oddRow, evenRow, by = c("File", "newRow"), all.x = T) %>%
+  dplyr::select("File", "tp.x", "tp.y", "Second.x", "Frame.x", "Second.y", "Frame.y")
+
+breakTime1 <-
+  breakTime1 %>%
+  dplyr::rename(start = tp.x, end = tp.y)
+
+# Now get the intervals based on even-odd trials
+# Get rid of the first row of each file so that the first even trial (N = 2) will be the first trial
+countRow2 <- 
+  trimmedL %>%
+  filter(diff_sec > 2) %>%
+  arrange(File, Second, Frame) %>%
+  group_by(File) %>%
+  mutate(rowNumber = 1:n()) %>%
+  dplyr::slice(2:n())
+
+evenRow2 <-
+  countRow2 %>%
+  filter(rowNumber %% 2 == 0) %>%
+  group_by(File) %>%
+  mutate(newRow = 1:n()) %>%
+  dplyr::select(-one_of("rowNumber"))
+
+oddRow2 <-
+  countRow2 %>%
+  filter(rowNumber %% 2 == 1) %>%
+  group_by(File) %>%
+  mutate(newRow = 1:n()) %>%
+  dplyr::select(-one_of("rowNumber"))
+
+breakTime2 <-
+  merge(evenRow2, oddRow2, by = c("File", "newRow"), all.x = T) %>%
+  dplyr::select("File", "tp.x", "tp.y", "Second.x", "Frame.x", "Second.y", "Frame.y")
+
+breakTime2 <-
+  breakTime2 %>%
+  dplyr::rename(start = tp.x, end = tp.y)
+```
+
+
+```{r}
+zoomVideoPath <- "/Volumes/data/projects/smile/recordings/all_smile_recordings/"
+
+breakTimeAll <-
+  dplyr::bind_rows(breakTime1, breakTime2) %>%
+  arrange(File, start) %>%
+  group_by(File) %>%
+  mutate(output = paste0(File, "_cut_", 1:n(), ".mp4")) %>%
+  mutate(file = paste0(File, ".mp4")) %>%
+  mutate(session = str_extract(File, "session\\S{1}"),
+         part_id = str_extract(File, "smile_c_\\S{3}")) %>%
+  distinct(.)
+
+breakTimeAll[which((breakTimeAll$session != "session2" & 
+                    breakTimeAll$session != "session3") |
+                     is.na(breakTimeAll$session)),]$session <- "session1"
+```
+
+### Stack screen recording with gallery view
+### List screen and gallery views in Zoom backup data
+```{r}
+listZoom <-
+  function(pattern) {
+    galleryF <- list.files(pattern = pattern, path = zoomVideoPath, full.names = F) 
+  
+    galleryF <- as.data.frame(galleryF)
+    
+    gallery <-
+      galleryF %>%
+      filter(str_detect(galleryF, "splash")) %>%
+      mutate(session = str_extract(galleryF, "session\\S{1}"),
+             part_id = str_extract(galleryF, "smile_c_\\S{3}")) 
+    
+    gallery[which((gallery$session != "session2" & 
+                     gallery$session != "session3") |
+                     is.na(gallery$session)),]$session <- "session1"
+    return(gallery)
+  }
+
+galleryF <- listZoom("*gallery*")
+screenF <- listZoom("*screen*")
+
+zoomF <-
+  merge(galleryF, screenF, by = c("part_id", "session"), all.x = T) %>%
+  dplyr::rename(galleryFile = galleryF.x, 
+                screenFile = galleryF.y)
+```
+
+### Create ffmpeg commands for stacking videos
+```{r}
+zoomConcatPath <- "/Volumes/data/projects/smile/recordings/eye_recordings/splash/zoom_concat/"
+segmentedVideo <- "/Volumes/data/projects/smile/recordings/eye_recordings/splash/"
+
+segID <- list.files(segmentedVideo, full.names = F)
+
+zoomSeg <-
+  zoomF %>%
+  filter(!is.na(galleryFile) & !is.na(screenFile)) %>%
+  filter(!part_id %in% segID) %>%
+  mutate(galleryFile = paste0(zoomVideoPath, galleryFile),
+         screenFile = paste0(zoomVideoPath, screenFile),
+         output = paste0(zoomConcatPath, part_id, "_", session, "_concat", ".mp4"),
+         cut_input = paste0(zoomConcatPath, part_id, "_", session, "_concat", ".mp4"))
+
+
+# The ffmpeg command to stack videos, using gallery view as audio for the stacked video
+"ffmpeg \
+   -i /Volumes/data/projects/smile/recordings/all_smile_recordings/smile_c_016_splash_gallery.mp4 \
+   -i /Volumes/data/projects/smile/recordings/all_smile_recordings/smile_c_016_splash_screen.mp4 \
+   -filter_complex '[0:v]pad=iw*2:ih[int];[1:v]scale=1440:-2[1v];[int][1v]overlay=W/2:0[vid]' \
+   -map '[vid]' \
+   -c:v libx264 \
+   -crf 23 \
+   -preset veryfast \
+   -map 0:a output.mp4"
+
+concatCmd <- 
+  with(zoomSeg, sprintf("ffmpeg -i %s -i %s -filter_complex '[0:v]pad=iw*2:ih[int];[1:v]scale=1440:-2[1v];[int][1v]overlay=W/2:0[vid]' -map '[vid]' -c:v libx264 -crf 23 -preset veryfast -map 0:a %s", galleryFile, screenFile, output))
+
+# lapply(concatCmd[which(str_detect(concatCmd, "smile_c_021"))], system)
+# lapply(cmds, system)
+```
+
+### Create ffmpeg commands for cutting videos
+```{r}
+breakZoom <-
+  breakTimeAll %>%
+  filter(!is.na(start) & !is.na(end)) %>%
+  filter(!part_id %in% segID) %>%
+  mutate(output = paste0(zoomConcatPath, part_id, "/", output))
+
+breakZoom <-
+  merge(breakZoom, zoomSeg[,c("part_id", "session", "cut_input")], by = c("part_id", "session"), all.x = T)
+
+cmds <- with(breakZoom, sprintf("ffmpeg -ss %s -to %s -i %s -c copy %s", 
+                                   start, end, cut_input, output))
+
+lapply(unique(file.path("/Volumes/data/projects/smile/recordings/eye_recordings/splash/zoom_concat", breakZoom$part_id)),
+       function(x) if(!dir.exists(x)) dir.create(x))
+
+# lapply(cmds[which(str_detect(cmds, "smile_c_021"))], system)
+# lapply(cmds, system)
+```
+
+
+```{r}
+library(stringr)
+library(dplyr)
+
+gorillaVideoPath <- "/Volumes/data/projects/smile/recordings/eye_recordings/splash"
+
+gorillaVideo <- list.files(path = gorillaVideoPath, pattern = ".mp4$", full.names = T, recursive = T)
+processedAudio <- list.files(path = gorillaVideoPath, pattern = ".wav$", full.names = T, recursive = T)
+
+gorillaVideo <- as.data.frame(gorillaVideo)
+
+gorillaVideo <-
+  gorillaVideo %>%
+  filter(!str_detect(gorillaVideo, "bad_data")) %>%
+  filter(!str_detect(gorillaVideo, "_concat.mp4"))
+
+gorillaVideo$audioOutput <- str_replace(gorillaVideo$gorillaVideo, ".mp4", ".wav")
+
+newAudio <-
+  gorillaVideo %>%
+  filter(!audioOutput %in% unique(processedAudio))
+
+audioCmd <- with(newAudio, sprintf("ffmpeg -i %s -ab 160k -ac 2 -ar 44100 -vn %s", gorillaVideo, audioOutput))
+
+# lapply(audioCmd, system)
+
+gorillaVideo$scriptOutput <- str_replace(gorillaVideo$gorillaVideo, ".mp4", "_script.txt")
+
+processedScript <- list.files(path = gorillaVideoPath, pattern = "_script.txt$", full.names = T, recursive = T)
+
+newScript <-
+  gorillaVideo %>%
+  filter(!scriptOutput %in% unique(processedScript))
+
+transcribeCmd <- with(newScript, sprintf("whisperx %s > %s", audioOutput, scriptOutput))
+
+# lapply(transcribeCmd, system)
+```

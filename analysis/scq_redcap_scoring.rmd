@@ -59,9 +59,9 @@ scq_total$scq_rrspb <- rowSums(scq_total[,c(as.character(c(7:8, 11:16)))])
 # Calculate SMILE SCQ lifetime scores from Qualtrics
 ## Clean SMILE SCQ Lifetime data
 ```{r}
-scq_smile <- read.csv("/Volumes/data/projects/smile/data/social_cognition/SMILE SCQ Lifetime_November 8, 2022_07.11.csv", stringsAsFactors = F)
-name <- read.csv("/Volumes/data/projects/smile/data/demo/MINDSPLASH-Smilefirstname_DATA_2022-11-08_0917.csv", stringsAsFactors = F)
-scq_complete <- read.csv("/Volumes/data/projects/smile/data/social_cognition/MINDSPLASH-Smiledatacheck_DATA_2022-11-08_0921.csv")
+scq_smile <- read.csv("/Volumes/data/projects/smile/data/social_cognition/SMILE SCQ Lifetime_February 23, 2023_14.24.csv", stringsAsFactors = F)
+name <- read.csv("/Volumes/data/projects/smile/data/demo/MINDSPLASH-Smilefirstname_DATA_2023-02-23_1629.csv", stringsAsFactors = F)
+scq_complete <- read.csv("/Volumes/data/projects/smile/data/social_cognition/MINDSPLASH-Smiledatacheck_DATA_2023-02-23_1631.csv")
 
 scq_smile <- scq_smile[-2,]
 
@@ -92,12 +92,12 @@ colnames(scq_smile)[colnames(scq_smile) == "record_id"] <- "record_id_full"
 
 first_name <-
   name %>%
-  select("record_id", "first_name_part") %>%
+  dplyr::select("record_id", "first_name_part") %>%
   filter(first_name_part != "")
 
 last_name <-
   name %>%
-  select("record_id", "part_last_name") %>%
+  dplyr::select("record_id", "part_last_name") %>%
   filter(part_last_name != "")
 
 scq_smile <- merge(scq_smile, unique(first_name), by = c("first_name_part"), all.x = T)
@@ -133,16 +133,23 @@ scq_smile$record_id <- coalesce(scq_smile$record_id, scq_smile$record_id_last)
 
 scq_smile <-
   scq_smile %>%
-  select(-one_of("record_id_full", "record_id_first", "record_id_last")) %>%
+  dplyr::select(-one_of("record_id_full", "record_id_first", "record_id_last")) %>%
   distinct(.)
 
 scq_smile <- scq_smile[which(str_detect(scq_smile$record_id, "smile_c")),]
+
+# Get rid of the responses that didn't have full responses
+scq_smile <-
+  scq_smile %>%
+  filter(scq_smile$`40` != "")
 ```
 
 
 ## Manually check why these participants do not have SCQ data though they are marked as completed on Redcap, do they only have ABI-S?
 ```{r}
 setdiff(scq_logged, scq_smile$record_id)
+
+missing_response <- setdiff(scq_logged, scq_smile$record_id)
 ```
 
 
@@ -179,9 +186,24 @@ scq_total$scq_rrspb <- rowSums(scq_total[,c(as.character(c(7:8, 11:16)))])
 
 scq_total <-
   scq_total %>%
-  select("record_id", "Recorded Date", as.character(1:40), "scq_total", "scq_rsid", "scq_cd", "scq_rrspb")
+  dplyr::select("record_id", "Recorded Date", as.character(1:40), "scq_total", "scq_rsid", "scq_cd", "scq_rrspb")
 
 write.csv(scq_total, "/Volumes/data/projects/smile/assessments/scq/scq_scores_smile.csv")
 write.csv(scq_total, "/Users/jojohu/Documents/Splash/beh_analysis/social_cognition/scq_scores_smile.csv")
+
+duplicated_response <-
+  scq_total %>%
+  group_by(record_id) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n == 2)
+
+
+problem <- 
+  as.data.frame(dplyr::bind_rows(duplicated_response, as.data.frame(missing_response))) %>%
+  mutate(missing_response = as.character(missing_response)) %>%
+  mutate(participant_id = coalesce(record_id, missing_response)) %>%
+  dplyr::select(participant_id, n)
+
+write.csv(problem, "/Users/jojohu/Downloads/smile_scq_problem.csv")
 ```
 

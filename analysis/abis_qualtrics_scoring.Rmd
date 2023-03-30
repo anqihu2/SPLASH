@@ -1,0 +1,235 @@
+---
+title: "abi_s_scoring"
+author: "Jojo Hu"
+date: '2023-03-14'
+output: html_document
+---
+
+# Read in SMILE ABI-S Qualtrics data
+```{r}
+abiQ <- 
+  read.csv("/Users/jojohu/Documents/Splash/beh_analysis/social_cognition/SMILE ABI-S survey_March 12, 2023_20.46.csv", stringsAsFactors = F)
+
+abiQ <- abiQ[-2,]
+
+colnames(abiQ) <- as.character(abiQ[1,])
+
+colnames(abiQ) <- coalesce(str_extract(colnames(abiQ), "[:digit:]+"), colnames(abiQ))
+
+abi_label <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/social_cognition/abi_s_question_label.csv", stringsAsFactors = F)
+
+abi_label$question_num <- str_pad(abi_label$question_num, 2, side = c("left"), 0)
+
+colABI <- as.data.frame(colnames(abiQ))
+colnames(colABI) <- "question_num"
+colABI$number <- 1:nrow(colABI)
+
+colABI <- 
+  merge(colABI, abi_label, by = c("question_num"), all.x = T) %>%
+  arrange(number) %>%
+  dplyr::select(-one_of("number"))
+
+colnames(abiQ) <- coalesce(colABI$question_name, colABI$question_num)
+```
+
+
+
+
+```{r}
+abis_content <- read.csv("/Users/jojohu/Documents/Splash/beh_analysis/social_cognition/ABIS_2023-03-14_0143/instrument.csv", stringsAsFactors = F)
+
+abis_content <-
+  abis_content %>%
+  filter(Variable...Field.Name %in% colnames(abiQ)) 
+  
+temp <- data.frame(do.call(rbind, str_split(abis_content$Choices..Calculations..OR.Slider.Labels, "\\|")))
+
+temp$question_name <- abis_content$Variable...Field.Name
+
+temp <- 
+  temp %>%
+  dplyr::select(-one_of("question_name")) %>%
+  distinct(.) 
+
+temp[] <- lapply(temp, gsub, pattern='\\d, ', replacement='')
+
+colnames(temp) <- c(1,2,3,4,0)
+
+temp <- data.frame(t(temp))
+
+temp$number <- row.names(temp)
+
+temp <- dplyr::bind_rows(temp[,c("number", "X2")], temp[,c("number", "X1")])
+
+temp$answer <- coalesce(temp$X1, temp$X2)
+
+temp <- temp[,c("number", "answer")]
+
+temp$number <- as.numeric(as.character(temp$number))
+temp$answer <- as.character(temp$answer)
+temp$answer <- str_remove(temp$answer, "^ ")
+temp$answer <- str_remove(temp$answer, " $")
+```
+
+
+```{r}
+abiQ <- abiQ[-1,]
+
+for(i in 1:nrow(temp)) {
+  patternTemp <- paste0("^", temp[i,2])
+  abiQ[] <- lapply(abiQ, gsub, pattern = patternTemp, replacement = as.character(temp[i,1]))
+}
+
+abiQ[,c(abis_content$Variable...Field.Name)] <- lapply(abiQ[,c(abis_content$Variable...Field.Name)], as.numeric)
+```
+
+
+```{r}
+abiQ <-
+  abiQ %>%
+  group_by(`Your Child's Name`) %>%
+	dplyr::mutate(comp_score = mean(c(ifelse(social_attention == 0, NA, 0-social_attention+4),
+	                         ifelse(social_response == 0, NA, 0-social_response+4),
+	                         ifelse(turn_taking == 0, NA, 0-turn_taking+4), 
+	                         ifelse(interaction_enjoyment == 0, NA, 0-interaction_enjoyment+4), 
+	                         ifelse(facial_expression == 0, NA, 0-facial_expression+4), 
+	                         ifelse(peer_interaction == 0, NA, peer_interaction-1), 
+	                         ifelse(same_way == 0, NA, same_way-1), 
+	                         ifelse(fixations == 0, NA, fixations-1), 
+	                         ifelse(mannerisms == 0, NA, mannerisms-1), 
+	                         ifelse(repetitive_movements == 0, NA, repetitive_movements-1), 
+	                         ifelse(self_injury == 0, NA, self_injury-1), 
+	                         ifelse(over_reaction_noise == 0, NA, over_reaction_noise-1), 
+	                         ifelse(over_reaction_touch == 0, NA, over_reaction_touch-1), 
+	                         ifelse(worries_minor == 0, NA, worries_minor-1), 
+	                         ifelse(tense_anxious == 0, NA, tense_anxious-1), 
+	                         ifelse(anxious_social == 0, NA, anxious_social-1), 
+	                         ifelse(fearful_specific == 0, NA, fearful_specific-1), 
+	                         ifelse(sleep_problems == 0, NA, sleep_problems-1), 
+	                         ifelse(impulsive == 0, NA, impulsive-1), 
+	                         ifelse(switches_topic == 0, NA, switches_topic-1), 
+	                         ifelse(excessive_activity == 0, NA, excessive_activity-1), 
+	                         ifelse(physical_aggression == 0, NA, physical_aggression-1), 
+	                         ifelse(reaction_aggression == 0, NA, reaction_aggression-1), 
+	                         ifelse(temper == 0, NA, temper-1)), na.rm = T)) %>%
+  dplyr::mutate(domain_score_sc = mean(c(ifelse(social_attention == 0, NA, 0-social_attention+4), 
+                           ifelse(social_response == 0, NA, 0-social_response+4), 
+                           ifelse(turn_taking == 0, NA, 0-turn_taking+4), 
+                           ifelse(interaction_enjoyment == 0, NA, 0-interaction_enjoyment+4), 
+                           ifelse(facial_expression == 0, NA, 0-facial_expression+4), 
+                           ifelse(peer_interaction == 0, NA, peer_interaction-1)), na.rm = T)) %>%
+  dplyr::mutate(domain_score_rb = mean(c(ifelse(same_way == 0, NA, same_way-1), 
+                                       ifelse(fixations == 0, NA, fixations-1), 
+                                       ifelse(mannerisms == 0, NA, mannerisms-1), 
+                                       ifelse(repetitive_movements == 0, NA, repetitive_movements-1), 
+                                       ifelse(self_injury == 0, NA, self_injury-1), 
+                                       ifelse(over_reaction_noise == 0, NA, over_reaction_noise-1), 
+                                       ifelse(over_reaction_touch == 0, NA, over_reaction_touch-1)), na.rm = T)) %>%
+  dplyr::mutate(domain_score_ma = mean(c(ifelse(worries_minor == 0, NA, worries_minor-1),
+                                       ifelse(tense_anxious == 0, NA, tense_anxious-1), 
+                                       ifelse(anxious_social == 0, NA, anxious_social-1), 
+                                       ifelse(fearful_specific == 0, NA, fearful_specific-1), 
+                                       ifelse(sleep_problems == 0, NA, sleep_problems-1)), na.rm = T)) %>%
+  dplyr::mutate(domain_score_sr = mean(c(ifelse(impulsive == 0, NA, impulsive-1), 
+                                         ifelse(switches_topic == 0, NA, switches_topic-1), 
+                                         ifelse(excessive_activity == 0, NA, excessive_activity-1)), na.rm = T)) %>%
+  dplyr::mutate(domain_score_cb = mean(c(ifelse(physical_aggression == 0, NA, physical_aggression-1), 
+                                         ifelse(reaction_aggression == 0, NA, reaction_aggression-1), 
+                                         ifelse(temper == 0, NA, temper-1)), na.rm = T)) %>%
+  dplyr::mutate(core_score_sc_rb = mean(c(ifelse(social_attention == 0, NA, 0-social_attention+4), 
+                                           ifelse(social_response == 0, NA, 0-social_response+4), 
+                                           ifelse(turn_taking == 0, NA, 0-turn_taking+4), 
+                                           ifelse(interaction_enjoyment == 0, NA, 0-interaction_enjoyment+4), 
+                                           ifelse(facial_expression == 0, NA, 0-facial_expression+4), 
+                                           ifelse(peer_interaction == 0, NA, peer_interaction-1), 
+                                           ifelse(same_way == 0, NA, same_way-1), 
+                                           ifelse(fixations == 0, NA, fixations-1), 
+                                           ifelse(mannerisms == 0, NA, mannerisms-1), 
+                                           ifelse(repetitive_movements == 0, NA, repetitive_movements-1), 
+                                           ifelse(self_injury == 0, NA, self_injury-1), 
+                                           ifelse(over_reaction_noise == 0, NA, over_reaction_noise-1), 
+                                           ifelse(over_reaction_touch == 0, NA, over_reaction_touch-1)), na.rm = T))
+```
+
+
+# Read in SMILE participant names and merge ABI-S with smile IDs
+```{r}
+name <- read.csv("/Volumes/data/projects/smile/data/social_cognition/MINDSPLASH-Smilefirstname_DATA_2023-03-02_2036.csv", stringsAsFactors = F)
+scq_complete <- read.csv("/Volumes/data/projects/smile/data/social_cognition/MINDSPLASH-Smiledatacheck_DATA_2023-03-02_2036.csv")
+
+abiQ <-
+  abiQ %>%
+  mutate(full_name = tolower(`Your Child's Name`)) %>%
+  tidyr::separate(full_name, c("first_name_part", "part_last_name"), " ", remove = FALSE)
+
+# complete is 2
+scq_logged <- scq_complete[which(scq_complete$abisscq_links_complete == 2), "record_id"]
+scq_logged <- scq_logged[which(str_detect(scq_logged, "smile_c"))]
+
+name$first_name_part <- tolower(name$first_name_part)
+name$part_last_name <- tolower(name$part_last_name)
+name$full_name <- paste(name$first_name_part, name$part_last_name)
+name <- name[which(name$record_id %in% scq_logged),]
+
+abiQ <- merge(abiQ, unique(name[,c("record_id", "full_name")]), by = c("full_name"), all.x = T)
+colnames(abiQ)[colnames(abiQ) == "record_id"] <- "record_id_full"
+
+first_name <-
+  name %>%
+  dplyr::select("record_id", "first_name_part") %>%
+  filter(first_name_part != "")
+
+last_name <-
+  name %>%
+  dplyr::select("record_id", "part_last_name") %>%
+  filter(part_last_name != "")
+
+abiQ <- merge(abiQ, unique(first_name), by = c("first_name_part"), all.x = T)
+colnames(abiQ)[colnames(abiQ) == "record_id"] <- "record_id_first"
+
+abiQ <- merge(abiQ, unique(last_name), by = c("part_last_name"), all.x = T)
+colnames(abiQ)[colnames(abiQ) == "record_id"] <- "record_id_last"
+
+setdiff(scq_logged, abiQ$record_id_first)
+
+# Extract rows that are duplicatedly matched
+duplicated_match <- which(duplicated(abiQ[,-which(str_detect(colnames(abiQ), "record_id"))]))
+
+# Test whether the record IDs merged based on full name, first name, or last name are the same (check if the three columns are the same)
+cols_to_test = c(which(str_detect(colnames(abiQ), "record_id")))
+unmatch <- which(!rowSums(abiQ[cols_to_test] == abiQ[, cols_to_test[1]]) == length(cols_to_test))
+
+# Get rid of the rows that are both duplicated match and unmatched
+abiQ <- abiQ[-c(duplicated_match[which(duplicated_match %in% unmatch)]),]
+
+duplicated_match <- which(duplicated(abiQ[,-which(str_detect(colnames(abiQ), "record_id"))]))
+
+cols_to_test = c("record_id_first", "record_id_last")
+unmatch <- which(!rowSums(abiQ[cols_to_test] == abiQ[, cols_to_test[1]]) == length(cols_to_test))
+
+abiQ <- abiQ[-c(duplicated_match[which(duplicated_match %in% unmatch)]),]
+
+duplicated_match <- which(duplicated(abiQ[,-which(str_detect(colnames(abiQ), "record_id"))]))
+
+abiQ$record_id <- coalesce(abiQ$record_id_full, abiQ$record_id_first)
+
+abiQ$record_id <- coalesce(abiQ$record_id, abiQ$record_id_last)
+
+abiQ <-
+  abiQ %>%
+  dplyr::select(-one_of("record_id_full", "record_id_first", "record_id_last")) %>%
+  distinct(.)
+
+abiQ <- abiQ[which(str_detect(abiQ$record_id, "smile_c")),]
+
+abiQ <- 
+  abiQ %>%
+  arrange(record_id)
+
+# setdiff(scq_logged, abiQ$record_id)
+```
+
+```{r}
+write.csv(abiQ, "/Volumes/data/projects/smile/assessments/abis/abis_scores_smile.csv")
+write.csv(abiQ, "/Users/jojohu/Documents/Splash/beh_analysis/social_cognition/abis_scores_smile.csv")
+```
